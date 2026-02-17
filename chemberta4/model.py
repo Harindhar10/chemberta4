@@ -1,0 +1,94 @@
+"""
+Model wrappers for classification, regression, and causal LM tasks.
+
+These are lightweight wrappers around the backbone (OLMo with LoRA).
+Each wrapper handles the task-specific output head and loss computation.
+"""
+
+import torch
+import torch.nn as nn
+from typing import Optional, Tuple
+
+
+def last_token_pool(
+    hidden_states: torch.Tensor,
+    attention_mask: torch.Tensor
+) -> torch.Tensor:
+    """
+    Extract the last non-padding token representation.
+
+    For decoder-only models like OLMo, we use the last token's representation
+    for classification/regression tasks.
+
+    Args:
+        hidden_states: [batch, seq_len, hidden_size]
+        attention_mask: [batch, seq_len]
+
+    Returns:
+        Pooled output: [batch, hidden_size]
+    """
+    sequence_lengths = attention_mask.sum(dim=1) - 1
+    batch_size = hidden_states.shape[0]
+
+    # Create indices for gathering
+    indices = sequence_lengths.view(-1, 1, 1).expand(
+        batch_size, 1, hidden_states.size(-1)
+    )
+    indices = indices.to(hidden_states.device)
+
+    # Gather and squeeze
+    return torch.gather(hidden_states, 1, indices).squeeze(1)
+
+
+class RegressionHead(nn.Module):
+    """
+    Regression head with last-token pooling.
+
+    Uses RMSE loss by default.
+
+    Args:
+        backbone: The base model (OLMo with LoRA)
+    """
+
+    def __init__(self, backbone: nn.Module):
+        super().__init__()
+        self.backbone = backbone
+        self.regressor = nn.Linear(backbone.config.hidden_size, 1)
+
+        # Initialize with small weights
+        nn.init.normal_(self.regressor.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.regressor.bias)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass for regression.
+
+        Args:
+            input_ids: [batch, seq_len]
+            attention_mask: [batch, seq_len]
+            labels: [batch] normalized regression targets
+
+        Returns:
+            predictions: [batch]
+            loss: scalar RMSE loss if labels provided
+        """
+        out = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        last_hidden_state = out.last_hidden_state
+        pooled_output = last_token_pool(last_hidden_state, attention_mask)
+        preds = self.regressor(pooled_output).squeeze(-1)
+
+        loss = None
+        if labels is not None:
+            # RMSE loss with epsilon for numerical stability
+            loss = torch.sqrt(nn.functional.mse_loss(preds, labels) + 1e-6)
+
+        return preds, loss
