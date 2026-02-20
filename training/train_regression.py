@@ -1,25 +1,6 @@
-#!/usr/bin/env python3
-"""
-Regression finetuning on MoleculeNet datasets.
-
-Examples:
-    # Single/Multi GPU with QLoRA
-    python scripts/train_regression.py --tasks clearance
-
-    # Multiple tasks (runs sequentially)
-    python scripts/train_regression.py --tasks delaney freesolv lipophilicity
-
-    # Full finetuning
-    python scripts/train_regression.py --tasks lipophilicity --full_finetune --lr 1e-5
-"""
-
-import argparse
 import gc
-import os
-import sys
 from datetime import datetime
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from types import SimpleNamespace
 
 import pandas as pd
 import pytorch_lightning as pl
@@ -32,122 +13,25 @@ from pytorch_lightning.callbacks import (
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from chemberta4.callbacks import MLflowCallback, WandbCallback
-from chemberta4.data import MoleculeDataset
-from chemberta4.tasks import get_task, list_tasks
+from chemberta4.callbacks import WandbCallback
+from chemberta4.data import MoleculeNetDataset
 from chemberta4.trainer import OLMoRegressor
-from chemberta4.utils import is_main_process, print0, set_seed
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from chemberta4.utils import get_task, is_main_process, print0
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="OLMo Regression Fine-tuning",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+def run_regression_experiment(args: SimpleNamespace, task_name: str) -> None:
+    """Run training and evaluation on a MoleculeNet regression dataset.
 
-    # ---- Task Selection ----
-    parser.add_argument(
-        "--tasks",
-        type=str,
-        nargs="+",
-        required=True,
-        choices=[t for t in list_tasks() if get_task(t).task_type == "regression"],
-        help="Regression task name(s)",
-    )
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default="olmo/datasets/deepchem_splits",
-        help="Directory containing dataset splits",
-    )
-
-    # ---- Model ----
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        default="allenai/OLMo-7B-hf",
-        help="HuggingFace model name",
-    )
-    parser.add_argument(
-        "--use_qlora",
-        default=True,
-        help="Use 4-bit quantized LoRA",
-    )
-    parser.add_argument(
-        "--full_finetune",
-        action="store_true",
-        help="Full finetuning without LoRA",
-    )
-
-    # ---- Training ----
-    parser.add_argument("--max_len", type=int, default=128, help="Max sequence length")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU")
-    parser.add_argument(
-        "--gradient_accum", type=int, default=4, help="Gradient accumulation steps"
-    )
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
-    parser.add_argument("--epochs", type=int, default=30, help="Max epochs")
-    parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
-    parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup ratio")
-    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm")
-
-    # ---- LoRA ----
-    parser.add_argument("--lora_r", type=int, default=32, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=64, help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
-
-    # ---- Infrastructure ----
-    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--output_dir", type=str, default="./outputs", help="Output dir")
-    parser.add_argument(
-        "--delete_checkpoint",
-        action="store_true",
-        help="Delete saved checkpoint after test evaluation",
-    )
-    parser.add_argument(
-        "--tracker",
-        type=str,
-        default="mlflow",
-        choices=["mlflow", "wandb"],
-        help="Experiment tracker to use",
-    )
-    parser.add_argument(
-        "--mlflow_uri",
-        type=str,
-        default="./mlruns",
-        help="MLflow tracking URI (used when --tracker=mlflow)",
-    )
-    parser.add_argument(
-        "--wandb_project",
-        type=str,
-        default=None,
-        help="W&B project name (used when --tracker=wandb, default: chemberta4-{task_name})",
-    )
-    parser.add_argument(
-        "--wandb_entity",
-        type=str,
-        default=None,
-        help="W&B entity (username or team name)",
-    )
-    parser.add_argument(
-        "--wandb_key",
-        type=str,
-        default=None,
-        help="W&B API key (optional, can also use WANDB_API_KEY env var)",
-    )
-
-    return parser.parse_args()
-
-
-def run_task(args, task_name):
-    """Run training and evaluation for a single regression task."""
+    Parameters
+    ----------
+    args : SimpleNamespace
+        Training arguments (model, data, optimizer, and logging settings).
+    task_name : str
+        Name of the MoleculeNet dataset to run the experiment on.
+    """
     # Get task config
     task_config = get_task(task_name)
-    assert task_config.task_type == "regression", f"Task {task_name} is not a regression task"
+    assert task_config.experiment_type == "regression", f"Task {task_name} is not a regression task"
 
     print0(f"\nTask: {task_name}")
     print0(f"Target column: {task_config.target_column}")
@@ -162,12 +46,13 @@ def run_task(args, task_name):
     test_df = pd.read_csv(f"{args.data_dir}/{task_name}/test.csv")
 
     # Create training dataset (computes normalization stats)
-    train_ds = MoleculeDataset(
+    train_ds = MoleculeNetDataset(
         train_df,
         tokenizer,
         task_config.task_columns,
         task_config.prompt,
         task_config.task_type,
+        task_config.experiment_type,
         args.max_len,
     )
 
@@ -176,21 +61,23 @@ def run_task(args, task_name):
     print0(f"Label normalization - Mean: {label_stats['mean']:.4f}, Std: {label_stats['std']:.4f}")
 
     # Create val/test datasets with training stats
-    val_ds = MoleculeDataset(
+    val_ds = MoleculeNetDataset(
         val_df,
         tokenizer,
         task_config.task_columns,
         task_config.prompt,
         task_config.task_type,
+        task_config.experiment_type,
         args.max_len,
         label_stats=label_stats,
     )
-    test_ds = MoleculeDataset(
+    test_ds = MoleculeNetDataset(
         test_df,
         tokenizer,
         task_config.task_columns,
         task_config.prompt,
         task_config.task_type,
+        task_config.experiment_type,
         args.max_len,
         label_stats=label_stats,
     )
@@ -209,10 +96,9 @@ def run_task(args, task_name):
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
 
     # Model
-    use_qlora = args.use_qlora and not args.full_finetune
     model = OLMoRegressor(
         model_name=args.model_name,
-        use_qlora=use_qlora,
+        finetune_strategy=args.finetune_strategy,
         lr=args.lr,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
@@ -233,7 +119,7 @@ def run_task(args, task_name):
             verbose=True,
         ),
         LearningRateMonitor(logging_interval="step"),
-        MLflowCallback() if args.tracker == "mlflow" else WandbCallback(),
+        *([ WandbCallback() ] if args.wandb else []),
         ModelCheckpoint(
             dirpath=f"{args.output_dir}/{task_name}/{timestamp}",
             filename="best-{val/rmse:.4f}",
@@ -248,44 +134,28 @@ def run_task(args, task_name):
     num_devices = torch.cuda.device_count() or 1
 
     # Tracker init (rank 0 only)
-    if is_main_process():
-        if args.tracker == "mlflow":
-            import mlflow
+    if is_main_process() and args.wandb:
+        import wandb
 
-            mlflow.set_tracking_uri(args.mlflow_uri)
-            mlflow.set_experiment(f"chemberta4-{task_name}")
-            mlflow.start_run(run_name=f"{task_name}_{timestamp}")
-            log_params = {k: v for k, v in vars(args).items() if k != "wandb_key"}
-            mlflow.log_params(log_params)
-            mlflow.log_params({
-                "task": task_name,
-                "label_mean": label_stats["mean"],
-                "label_std": label_stats["std"],
-                "num_devices": num_devices,
-                "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
-            })
-        elif args.tracker == "wandb":
-            import wandb
+        if args.wandb_key:
+            wandb.login(key=args.wandb_key)
 
-            if args.wandb_key:
-                wandb.login(key=args.wandb_key)
-
-            project_name = args.wandb_project or f"chemberta4-{task_name}"
-            log_params = {k: v for k, v in vars(args).items() if k not in ("wandb_key", "mlflow_uri")}
-            wandb.init(
-                entity=args.wandb_entity,
-                project=project_name,
-                name=f"{task_name}_{timestamp}",
-                config=log_params,
-                reinit=True,
-            )
-            wandb.config.update({
-                "task": task_name,
-                "label_mean": label_stats["mean"],
-                "label_std": label_stats["std"],
-                "num_devices": num_devices,
-                "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
-            })
+        project_name = args.wandb_project or f"chemberta4-{task_name}"
+        log_params = {k: v for k, v in vars(args).items() if k != "wandb_key"}
+        wandb.init(
+            entity=args.wandb_entity,
+            project=project_name,
+            name=f"{task_name}_{timestamp}",
+            config=log_params,
+            reinit=True,
+        )
+        wandb.config.update({
+            "task": task_name,
+            "label_mean": label_stats["mean"],
+            "label_std": label_stats["std"],
+            "num_devices": num_devices,
+            "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
+        })
 
     # Trainer
     trainer = pl.Trainer(
@@ -312,20 +182,13 @@ def run_task(args, task_name):
     trainer.test(model, test_loader)
 
     # Finalize tracker
-    if is_main_process():
-        if args.tracker == "mlflow":
-            import mlflow
+    if is_main_process() and args.wandb:
+        import wandb
 
-            for key, value in trainer.callback_metrics.items():
-                mlflow.log_metric(f"final_{key.replace('/', '_')}", float(value))
-            mlflow.end_run()
-        elif args.tracker == "wandb":
-            import wandb
-
-            for key, value in trainer.callback_metrics.items():
-                metric_name = f"final_{key.replace('/', '_')}"
-                wandb.log({metric_name: float(value)})
-            wandb.finish()
+        for key, value in trainer.callback_metrics.items():
+            metric_name = f"final_{key.replace('/', '_')}"
+            wandb.log({metric_name: float(value)})
+        wandb.finish()
 
         checkpoint_callback = [c for c in callbacks if isinstance(c, ModelCheckpoint)][0]
         print0(f"\nDone! Best RMSE: {checkpoint_callback.best_model_score:.4f}")
@@ -342,17 +205,3 @@ def run_task(args, task_name):
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-
-def main():
-    args = parse_args()
-    set_seed(args.seed)
-    pl.seed_everything(args.seed, workers=True)
-
-    print0(f"Running {len(args.tasks)} task(s): {', '.join(args.tasks)}")
-    for task_name in args.tasks:
-        run_task(args, task_name)
-
-
-if __name__ == "__main__":
-    main()
