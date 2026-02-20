@@ -16,33 +16,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .model import ClassificationHead, CausalLMClassificationHead, RegressionHead
 from .utils import get_device_map
 
-
 class OLMoPretrainer(pl.LightningModule):
     """Lightning module for causal LM pretraining.
 
     Used for pretraining on SMILES (ZINC20, PubChem) or
     instruction tuning (USPTO).
-
-    Parameters
-    ----------
-    model_name : str
-        HuggingFace model identifier or path to a pretrained model.
-    finetune_strategy : str
-        One of 'qlora', 'lora', or 'full_finetune'.
-    lr : float
-        Learning rate.
-    weight_decay : float
-        Weight decay.
-    warmup_ratio : float
-        Fraction of total steps used for linear warmup.
-    lora_r : int
-        LoRA rank.
-    lora_alpha : int
-        LoRA alpha.
-    lora_dropout : float
-        LoRA dropout rate.
-    gradient_checkpointing : bool
-        Whether to enable gradient checkpointing to reduce VRAM usage.
     """
 
     def __init__(
@@ -57,6 +35,29 @@ class OLMoPretrainer(pl.LightningModule):
         lora_dropout: float = 0.05,
         gradient_checkpointing: bool = True,
     ):
+        """Initialise OLMoPretrainer.
+
+        Parameters
+        ----------
+        model_name : str
+            HuggingFace model identifier or path to a pretrained model.
+        finetune_strategy : str
+            One of 'qlora', 'lora', or 'full_finetune'.
+        lr : float
+            Learning rate.
+        weight_decay : float
+            Weight decay.
+        warmup_ratio : float
+            Fraction of total steps used for linear warmup.
+        lora_r : int
+            LoRA rank.
+        lora_alpha : int
+            LoRA alpha.
+        lora_dropout : float
+            LoRA dropout rate.
+        gradient_checkpointing : bool
+            Whether to enable gradient checkpointing to reduce VRAM usage.
+        """
         super().__init__()
         self.save_hyperparameters()
 
