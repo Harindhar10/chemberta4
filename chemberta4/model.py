@@ -1,10 +1,3 @@
-"""
-Model wrappers for classification, regression, and causal LM tasks.
-
-These are lightweight wrappers around the backbone (OLMo with LoRA).
-Each wrapper handles the task-specific output head and loss computation.
-"""
-
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
