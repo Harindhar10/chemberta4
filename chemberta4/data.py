@@ -1,10 +1,3 @@
-"""
-Dataset classes for molecular property prediction.
-
-Provides unified dataset interfaces for classification, regression,
-pretraining, and instruction tuning tasks.
-"""
-
 import torch
 import numpy as np
 import pandas as pd

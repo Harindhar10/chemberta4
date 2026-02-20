@@ -1,9 +1,3 @@
-"""
-Custom PyTorch Lightning callbacks.
-
-Provides WandbCallback for experiment tracking.
-"""
-
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 

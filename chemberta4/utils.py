@@ -1,9 +1,3 @@
-"""
-Distributed training utilities following nanochat patterns.
-
-Simple, explicit utilities for rank-aware operations.
-"""
-
 import os
 import random
 from types import SimpleNamespace
