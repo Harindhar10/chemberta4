@@ -7,7 +7,7 @@ Supports classification (single_task, multi_task), regression, causal LM pretrai
 
 ## Acknowledgements
 
-Thanks to Saurav and Arjit for openly sharing their work. Parts of this repository are inspired by their approach.
+Thanks to @Sauravroy34 and Arjit for sharing their work. Parts of this repository are inspired by their approach.
 
 ## Supported Datasets
 
