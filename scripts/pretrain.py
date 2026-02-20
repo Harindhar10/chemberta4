@@ -1,25 +1,7 @@
-#!/usr/bin/env python3
-"""
-Causal LM pretraining on SMILES datasets (ZINC20, PubChem).
-
-Examples:
-    # Pretrain on ZINC20
-    torchrun --nproc_per_node=4 scripts/pretrain.py --dataset zinc20 --num_samples 1000000
-
-    # Pretrain on PubChem
-    torchrun --nproc_per_node=4 scripts/pretrain.py --dataset pubchem --epochs 2
-
-    # Continue from a checkpoint
-    python scripts/pretrain.py --dataset zinc20 --model_name harindhar10/OLMo-7B-ZINC20
-"""
-
-import argparse
 import gc
-import os
-import sys
 from datetime import datetime
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from types import SimpleNamespace
+from typing import List
 
 import pytorch_lightning as pl
 import torch
@@ -29,123 +11,26 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from chemberta4.callbacks import MLflowCallback, WandbCallback
+from chemberta4.callbacks import WandbCallback
 from chemberta4.data import PretrainingDataset
 from chemberta4.trainer import OLMoPretrainer
-from chemberta4.utils import is_main_process, print0, set_seed
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from chemberta4.utils import is_main_process, print0
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="OLMo SMILES Pretraining",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+def load_smiles_data(args: SimpleNamespace) -> List[str]:
+    """Load SMILES dataset from HuggingFace based on args.
 
-    # ---- Dataset ----
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        choices=["zinc20", "pubchem", "custom"],
-        help="Pretraining dataset",
-    )
-    parser.add_argument(
-        "--dataset_path",
-        type=str,
-        default=None,
-        help="HuggingFace dataset path (for custom datasets)",
-    )
-    parser.add_argument(
-        "--smiles_column",
-        type=str,
-        default="smiles",
-        help="Column name containing SMILES strings",
-    )
-    parser.add_argument(
-        "--num_samples",
-        type=int,
-        default=10000,
-        help="Number of samples to use (None = all)",
-    )
+    Parameters
+    ----------
+    args : SimpleNamespace
+        Data loading arguments. Must have 'dataset' (str) and optionally
+        'num_samples' (int), 'dataset_path' (str), 'smiles_column' (str).
 
-    # ---- Model ----
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        default="allenai/OLMo-7B-hf",
-        help="Base model name or path",
-    )
-    parser.add_argument(
-        "--use_qlora",
-        default=True,
-        help="Use 4-bit QLoRA",
-    )
-    parser.add_argument(
-        "--hub_name",
-        type=str,
-        default=None,
-        help="HuggingFace Hub name for pushing model (e.g., username/model-name)",
-    )
-
-    # ---- Training ----
-    parser.add_argument("--max_len", type=int, default=256, help="Max sequence length")
-    parser.add_argument("--batch_size", type=int, default=2, help="Batch size per GPU")
-    parser.add_argument("--gradient_accum", type=int, default=4, help="Gradient accumulation")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
-    parser.add_argument("--warmup_ratio", type=float, default=0.15, help="Warmup ratio")
-    parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--val_ratio", type=float, default=0.05, help="Fraction of data for validation")
-    parser.add_argument("--val_check_interval", type=int, default=500, help="Validate every N training steps")
-
-    # ---- LoRA ----
-    parser.add_argument("--lora_r", type=int, default=64, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=128, help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
-
-    # ---- Infrastructure ----
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--output_dir", type=str, default="./outputs", help="Output directory")
-    parser.add_argument(
-        "--tracker",
-        type=str,
-        default="mlflow",
-        choices=["mlflow", "wandb"],
-        help="Experiment tracker to use",
-    )
-    parser.add_argument(
-        "--mlflow_uri",
-        type=str,
-        default="./mlruns",
-        help="MLflow tracking URI (used when --tracker=mlflow)",
-    )
-    parser.add_argument(
-        "--wandb_project",
-        type=str,
-        default=None,
-        help="W&B project name (used when --tracker=wandb, default: chemberta4-pretrain-{dataset})",
-    )
-    parser.add_argument(
-        "--wandb_entity",
-        type=str,
-        default=None,
-        help="W&B entity (username or team name)",
-    )
-    parser.add_argument(
-        "--wandb_key",
-        type=str,
-        default=None,
-        help="W&B API key (optional, can also use WANDB_API_KEY env var)",
-    )
-
-    return parser.parse_args()
-
-
-def load_smiles_data(args):
-    """Load SMILES dataset based on args."""
+    Returns
+    -------
+    List[str]
+        A list of SMILES strings.
+    """
     if args.dataset == "zinc20":
         # ZINC20 dataset from HuggingFace
         dataset = load_dataset("zpn/zinc20", split="train", streaming=True, trust_remote_code=True).take(args.num_samples)
@@ -171,10 +56,18 @@ def load_smiles_data(args):
     return smiles_list
 
 
-def main():
-    args = parse_args()
-    set_seed(args.seed)
-    pl.seed_everything(args.seed)
+def run_pretraining_experiment(args: SimpleNamespace, task_name: str) -> None:
+    """Run causal LM pretraining on a SMILES dataset.
+
+    Parameters
+    ----------
+    args : SimpleNamespace
+        Training arguments (model, data, optimizer, and logging settings).
+    task_name : str
+        Name of the pretraining dataset (e.g. 'zinc20', 'pubchem').
+    """
+    # Set dataset in args for load_smiles_data compatibility
+    args.dataset = task_name
 
     print0(f"Loading dataset: {args.dataset}")
     smiles_list = load_smiles_data(args)
@@ -206,7 +99,7 @@ def main():
     # Model
     model = OLMoPretrainer(
         model_name=args.model_name,
-        use_qlora=args.use_qlora,
+        finetune_strategy=args.finetune_strategy,
         lr=args.lr,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
@@ -219,48 +112,33 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     callbacks = [
         LearningRateMonitor(logging_interval="step"),
-        MLflowCallback() if args.tracker == "mlflow" else WandbCallback(),
+        *([ WandbCallback() ] if args.wandb else []),
     ]
 
     num_devices = torch.cuda.device_count() or 1
 
     # Tracker init (rank 0 only)
-    if is_main_process():
-        if args.tracker == "mlflow":
-            import mlflow
+    if is_main_process() and args.wandb:
+        import wandb
 
-            mlflow.set_tracking_uri(args.mlflow_uri)
-            mlflow.set_experiment(f"chemberta4-pretrain-{args.dataset}")
-            mlflow.start_run(run_name=f"pretrain-{args.dataset}_{timestamp}")
-            log_params = {k: v for k, v in vars(args).items() if k != "wandb_key"}
-            mlflow.log_params(log_params)
-            mlflow.log_params({
-                "dataset": args.dataset,
-                "num_samples": args.num_samples,
-                "num_devices": num_devices,
-                "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
-            })
-        elif args.tracker == "wandb":
-            import wandb
+        if args.wandb_key:
+            wandb.login(key=args.wandb_key)
 
-            if args.wandb_key:
-                wandb.login(key=args.wandb_key)
-
-            project_name = args.wandb_project or f"chemberta4-pretrain-{args.dataset}"
-            log_params = {k: v for k, v in vars(args).items() if k not in ("wandb_key", "mlflow_uri")}
-            wandb.init(
-                entity=args.wandb_entity,
-                project=project_name,
-                name=f"pretrain-{args.dataset}_{timestamp}",
-                config=log_params,
-                reinit=True,
-            )
-            wandb.config.update({
-                "dataset": args.dataset,
-                "num_samples": args.num_samples,
-                "num_devices": num_devices,
-                "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
-            })
+        project_name = args.wandb_project or f"chemberta4-pretrain-{args.dataset}"
+        log_params = {k: v for k, v in vars(args).items() if k != "wandb_key"}
+        wandb.init(
+            entity=args.wandb_entity,
+            project=project_name,
+            name=f"pretrain-{args.dataset}_{timestamp}",
+            config=log_params,
+            reinit=True,
+        )
+        wandb.config.update({
+            "dataset": args.dataset,
+            "num_samples": args.num_samples,
+            "num_devices": num_devices,
+            "effective_batch_size": args.batch_size * args.gradient_accum * num_devices,
+        })
 
     # Trainer
     trainer = pl.Trainer(
@@ -283,19 +161,12 @@ def main():
     trainer.fit(model, train_dataloader, val_dataloader)
 
     # Finalize tracker
-    if is_main_process():
-        if args.tracker == "mlflow":
-            import mlflow
+    if is_main_process() and args.wandb:
+        import wandb
 
-            for key, value in trainer.callback_metrics.items():
-                mlflow.log_metric(f"final_{key.replace('/', '_')}", float(value))
-            mlflow.end_run()
-        elif args.tracker == "wandb":
-            import wandb
-
-            for key, value in trainer.callback_metrics.items():
-                wandb.log({f"final_{key.replace('/', '_')}": float(value)})
-            wandb.finish()
+        for key, value in trainer.callback_metrics.items():
+            wandb.log({f"final_{key.replace('/', '_')}": float(value)})
+        wandb.finish()
 
     # Merge and push to hub
     if trainer.is_global_zero and args.hub_name:
@@ -336,6 +207,8 @@ def main():
         tokenizer.save_pretrained(adapter_path)
         print0(f"Adapter saved to: {adapter_path}")
 
-
-if __name__ == "__main__":
-    main()
+    # Cleanup
+    del model, trainer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
