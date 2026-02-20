@@ -1,10 +1,3 @@
-"""
-PyTorch Lightning training modules.
-
-Provides OLMoClassifier, OLMoRegressor, and OLMoPretrainer modules
-with support for QLoRA and full finetuning.
-"""
-
 import math
 from typing import Any, Dict, Optional
 
@@ -25,37 +18,11 @@ from .utils import get_device_map
 
 
 class OLMoClassifier(pl.LightningModule):
-    """Lightning module for classification tasks.
+    """Pytorch lightning training module for classification tasks.
 
     Supports single-task and multi-task classification.
     Can use either a classification head or LM head (Yes/No prediction).
     Supports QLoRA (4-bit), LoRA, and full finetuning.
-
-    Parameters
-    ----------
-    model_name : str
-        HuggingFace model identifier.
-    num_tasks : int
-        Number of classification tasks/labels.
-    task_type : str
-        One of 'single_task' or 'multi_task'.
-    use_lm_head : bool
-        If 'True', use Yes/No LM-head prediction instead of a classification head.
-    finetune_strategy : str
-        One of 'qlora' (4-bit + LoRA), 'lora' (LoRA only), or
-        'full_finetune' (all parameters trainable).
-    lr : float
-        Learning rate.
-    weight_decay : float
-        Weight decay for AdamW.
-    warmup_ratio : float
-        Fraction of total steps used for linear warmup.
-    lora_r : int
-        LoRA rank.
-    lora_alpha : int
-        LoRA alpha (typically 2× rank).
-    lora_dropout : float
-        LoRA dropout rate.
     """
 
     def __init__(
@@ -72,6 +39,34 @@ class OLMoClassifier(pl.LightningModule):
         lora_alpha: int = 64,
         lora_dropout: float = 0.05,
     ):
+        """Initialise OLMoClassifier.
+
+        Parameters
+        ----------
+        model_name : str
+            HuggingFace model identifier.
+        num_tasks : int
+            Number of classification tasks/labels.
+        task_type : str
+            One of 'single_task' or 'multi_task'.
+        use_lm_head : bool
+            If 'True', use Yes/No LM-head prediction instead of a classification head.
+        finetune_strategy : str
+            One of 'qlora' (4-bit + LoRA), 'lora' (LoRA only), or
+            'full_finetune' (all parameters trainable).
+        lr : float
+            Learning rate.
+        weight_decay : float
+            Weight decay for AdamW.
+        warmup_ratio : float
+            Fraction of total steps used for linear warmup.
+        lora_r : int
+            LoRA rank.
+        lora_alpha : int
+            LoRA alpha (typically 2× rank).
+        lora_dropout : float
+            LoRA dropout rate.
+        """
         super().__init__()
         self.save_hyperparameters()
 
