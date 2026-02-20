@@ -22,29 +22,6 @@ class OLMoRegressor(pl.LightningModule):
 
     Uses RMSE loss and supports label normalization.
     Reports denormalized metrics for interpretability.
-
-    Parameters
-    ----------
-    model_name : str
-        HuggingFace model identifier.
-    finetune_strategy : str
-        One of 'qlora', 'lora', or 'full_finetune'.
-    lr : float
-        Learning rate.
-    weight_decay : float
-        Weight decay for AdamW.
-    warmup_ratio : float
-        Fraction of total steps used for linear warmup.
-    lora_r : int
-        LoRA rank.
-    lora_alpha : int
-        LoRA alpha.
-    lora_dropout : float
-        LoRA dropout rate.
-    label_mean : float
-        Training-set label mean used for denormalization.
-    label_std : float
-        Training-set label std used for denormalization.
     """
 
     def __init__(
@@ -60,6 +37,31 @@ class OLMoRegressor(pl.LightningModule):
         label_mean: float = 0.0,
         label_std: float = 1.0,
     ):
+        """Initialise OLMoRegressor.
+
+        Parameters
+        ----------
+        model_name : str
+            HuggingFace model identifier.
+        finetune_strategy : str
+            One of 'qlora', 'lora', or 'full_finetune'.
+        lr : float
+            Learning rate.
+        weight_decay : float
+            Weight decay for AdamW.
+        warmup_ratio : float
+            Fraction of total steps used for linear warmup.
+        lora_r : int
+            LoRA rank.
+        lora_alpha : int
+            LoRA alpha.
+        lora_dropout : float
+            LoRA dropout rate.
+        label_mean : float
+            Training-set label mean used for denormalization.
+        label_std : float
+            Training-set label std used for denormalization.
+        """
         super().__init__()
         self.save_hyperparameters()
 

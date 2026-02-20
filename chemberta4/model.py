@@ -32,18 +32,20 @@ def last_token_pool(
     # Gather and squeeze
     return torch.gather(hidden_states, 1, indices).squeeze(1)
 
-
 class RegressionHead(nn.Module):
-    """
-    Regression head with last-token pooling.
+    """Regression head with last-token pooling.
 
     Uses RMSE loss by default.
-
-    Args:
-        backbone: The base model (OLMo with LoRA)
     """
 
     def __init__(self, backbone: nn.Module):
+        """Initialise RegressionHead.
+
+        Parameters
+        ----------
+        backbone : nn.Module
+            The base model (OLMo with LoRA).
+        """
         super().__init__()
         self.backbone = backbone
         self.regressor = nn.Linear(backbone.config.hidden_size, 1)
@@ -58,17 +60,21 @@ class RegressionHead(nn.Module):
         attention_mask: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Forward pass for regression.
+        """Run the forward pass for regression.
 
-        Args:
-            input_ids: [batch, seq_len]
-            attention_mask: [batch, seq_len]
-            labels: [batch] normalized regression targets
+        Parameters
+        ----------
+        input_ids : torch.Tensor
+            Token IDs of shape '[batch, seq_len]'.
+        attention_mask : torch.Tensor
+            Attention mask of shape '[batch, seq_len]'.
+        labels : torch.Tensor, optional
+            Normalized regression targets of shape '[batch]'.
 
-        Returns:
-            predictions: [batch]
-            loss: scalar RMSE loss if labels provided
+        Returns
+        -------
+        Tuple[torch.Tensor, Optional[torch.Tensor]]
+            Predicted values of shape '[batch]' and scalar RMSE loss if labels are provided, else None.
         """
         out = self.backbone(
             input_ids=input_ids,
