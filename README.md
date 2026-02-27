@@ -6,7 +6,7 @@ Supports classification (single_task, multi_task), regression, causal LM pretrai
 
 ## Acknowledgements
 
-Thanks to @Sauravroy34 and @arjitrawat15 for sharing their work. Parts of this repository are inspired by their approach. This repo is prepared in part to facilitate GSoC student contributions by providing a base template for them to build on.
+Thanks to @Sauravroy34 [Code](https://colab.research.google.com/drive/1Kr29LdFx5HWYyKHrBYKv21Ei5jsTaett?usp=sharing) and @arjitrawat15 [Code](https://www.kaggle.com/code/arjitrawat15/training-3) for sharing their work. Parts of this repository are inspired by their approach. This repo is prepared in part to facilitate GSoC student contributions by providing a base template for them to build on.
 
 ## Supported Datasets
 
