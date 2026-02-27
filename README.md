@@ -258,7 +258,7 @@ Training metrics are logged via wandb:
 | Task Type | Metrics |
 |---|---|
 | Classification | Accuracy, ROC-AUC |
-| Regression | RMSE, MAE (denormalized) |
+| Regression | RMSE, MAE |
 
 Early stopping (patience = 7) and model checkpointing are enabled by default, monitored on the validation metric defined in each task config.
 
