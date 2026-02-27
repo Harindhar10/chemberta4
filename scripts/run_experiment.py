@@ -113,19 +113,5 @@ def main() -> None:
         log0(f"Running {task.experiment_type} experiment: {dataset_name}")
         log0("=" * 60)
 
-        if task.experiment_type == "classification":
-            from chemberta4.training.train_classification import run_classification_experiment
-            run_classification_experiment(config, dataset_name)
-
-        elif task.experiment_type == "regression":
-            from chemberta4.training.train_regression import run_regression_experiment
-            run_regression_experiment(config, dataset_name)
-
-        else:
-            raise ValueError(f"Unknown experiment type '{task.experiment_type}' for dataset '{dataset_name}'")
-
-    log0("All experiments complete!")
-
-
 if __name__ == "__main__":
     main()
