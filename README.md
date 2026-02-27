@@ -2,7 +2,7 @@
 
 Library for molecular property prediction with [OLMo-7B](https://huggingface.co/allenai/OLMo-7B-hf).
 
-Supports classification (single_task, multi_task), regression, causal LM pretraining on SMILES, and instruction tuning. Training uses QLoRA (4-bit) by default and automatically scales across all available GPUs via PyTorch Lightning DDP. New datasets can be added through a task registry in ~5 lines. Experiments are tracked with wandb.
+Supports classification (single_task, multi_task), regression, causal LM pretraining on SMILES, and instruction tuning. Training uses QLoRA (4-bit) by default and automatically scales across all available GPUs via PyTorch Lightning DDP. Experiments are tracked with wandb.
 
 ## Acknowledgements
 
@@ -13,9 +13,8 @@ Thanks to @Sauravroy34 and @arjitrawat15 for sharing their work. Parts of this r
 | Category | Datasets | Task Type |
 |---|---|---|
 | **Classification** | BBBP, BACE, HIV, ClinTox | `single_task` |
-| **Classification** | SIDER (27 side-effect labels) | `multi_task` |
-| **Classification** | Tox21 (12 toxicity assays) | `multi_task` |
-| **Regression** | Delaney (ESOL), FreeSolv, Lipophilicity, Clearance, BACE | Continuous |
+| **Classification** | SIDER (27 side-effect labels), Tox21 (12 toxicity assays)| `multi_task` |
+| **Regression** | Delaney (ESOL), FreeSolv, Lipophilicity, Clearance, BACE |
 | **Pretraining** | ZINC20, PubChem | Causal LM |
 | **Instruction Tuning** | USPTO | Reaction prediction |
 
