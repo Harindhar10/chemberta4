@@ -1,3 +1,4 @@
+import re
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
@@ -8,10 +9,15 @@ def last_token_pool(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor
 ) -> torch.Tensor:
-    """Extract the last non-padding token representation.
+    """This function extracts the last non-padding token representation.
 
     For decoder-only models like OLMo, we use the last token's representation
-    for classification/regression tasks.
+    for classification/regression tasks. Decoder-only transformers process
+    tokens left-to-right, so the final non-padding position has attended to
+    the entire input sequence. This function uses
+    'attention_mask.sum(dim=1) - 1' to locate that position for each item
+    in the batch and extracts the corresponding hidden vector with
+    'torch.gather', avoiding any loop over batch elements.
 
     Parameters
     ----------
@@ -24,6 +30,22 @@ def last_token_pool(
     -------
     torch.Tensor
         Pooled output of shape '[batch, hidden_size]'.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from chemberta4.model import last_token_pool
+    >>> hidden = torch.zeros(2, 4, 8)
+    >>> hidden[0, 2, :] = 1.0   # last real token at position 2 for sample 0
+    >>> hidden[1, 3, :] = 1.0   # last real token at position 3 for sample 1
+    >>> mask = torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]])
+    >>> out = last_token_pool(hidden, mask)
+    >>> out.shape
+    torch.Size([2, 8])
+    >>> out[0].sum().item()
+    8.0
+    >>> out[1].sum().item()
+    8.0
     """
     sequence_lengths = attention_mask.sum(dim=1) - 1
     batch_size = hidden_states.shape[0]
@@ -39,10 +61,39 @@ def last_token_pool(
 
 
 class ClassificationHead(nn.Module):
-    """Classification head with last-token pooling.
+    """This class implements a classification head with last-token pooling for binary and multi-label prediction.
 
-    Supports single-task and multi-task classification.
-    Uses CrossEntropy for single_task, BCEWithLogits for multi_task.
+    It supports both single-task and multi-task classification.
+    It uses CrossEntropyLoss for single_task and BCEWithLogitsLoss for multi_task.
+
+    Takes a backbone 'nn.Module' (typically OLMo with LoRA adapters) and adds
+    a single linear layer on top of the last-token hidden state. For
+    'single_task' the output has 2 logits (binary) and is trained with
+    CrossEntropyLoss; for 'multi_task' there are 'num_tasks' sigmoid outputs
+    trained with BCEWithLogitsLoss. Missing labels in multi-task datasets are
+    excluded from the loss via 'label_mask'.
+
+    Examples
+    --------
+    >>> import torch, torch.nn as nn
+    >>> from types import SimpleNamespace
+    >>> from chemberta4.model import ClassificationHead
+    >>> class DummyBackbone(nn.Module):
+    ...     def __init__(self):
+    ...         super().__init__()
+    ...         self.config = SimpleNamespace(hidden_size=16)
+    ...         self.embed = nn.Embedding(100, 16)
+    ...     def forward(self, input_ids, attention_mask, output_hidden_states=False):
+    ...         h = self.embed(input_ids)
+    ...         return SimpleNamespace(hidden_states=[h])
+    >>> head = ClassificationHead(DummyBackbone(), num_tasks=1, task_type='single_task')
+    >>> input_ids = torch.zeros(2, 8, dtype=torch.long)
+    >>> mask = torch.ones(2, 8, dtype=torch.long)
+    >>> logits, loss = head(input_ids, mask)
+    >>> logits.shape
+    torch.Size([2, 2])
+    >>> loss is None
+    True
     """
 
     def __init__(
@@ -101,6 +152,28 @@ class ClassificationHead(nn.Module):
         Tuple[torch.Tensor, Optional[torch.Tensor]]
             Logits of shape '[batch, 2]' for single_task or '[batch, num_tasks]' for multi_task,
             and a scalar loss tensor if labels are provided, else None.
+
+        Examples
+        --------
+        >>> import torch, torch.nn as nn
+        >>> from types import SimpleNamespace
+        >>> from chemberta4.model import ClassificationHead
+        >>> class DummyBackbone(nn.Module):
+        ...     def __init__(self):
+        ...         super().__init__()
+        ...         self.config = SimpleNamespace(hidden_size=16)
+        ...         self.embed = nn.Embedding(100, 16)
+        ...     def forward(self, input_ids, attention_mask, output_hidden_states=False):
+        ...         h = self.embed(input_ids)
+        ...         return SimpleNamespace(hidden_states=[h])
+        >>> head = ClassificationHead(DummyBackbone(), num_tasks=1, task_type='single_task')
+        >>> input_ids = torch.zeros(2, 8, dtype=torch.long)
+        >>> mask = torch.ones(2, 8, dtype=torch.long)
+        >>> logits, loss = head(input_ids, mask)
+        >>> logits.shape
+        torch.Size([2, 2])
+        >>> loss is None
+        True
         """
         out = self.backbone(
             input_ids=input_ids,
@@ -149,15 +222,49 @@ class ClassificationHead(nn.Module):
                 # Masked loss for missing labels
                 loss_fct = nn.BCEWithLogitsLoss(reduction="none")
                 loss = loss_fct(logits, labels)
+                # Returns mean BCE loss over only valid (non-missing) labels
                 return (loss * label_mask.float()).sum() / label_mask.float().sum()
             return nn.BCEWithLogitsLoss()(logits, labels)
 
 
 class CausalLMClassificationHead(nn.Module):
-    """Use the LM head to predict Yes/No tokens for classification.
+    """This class uses the LM head to predict Yes/No tokens for classification.
 
-    Instead of a separate classification head, this approach leverages
+    Instead of a separate classification head, this class leverages
     the pretrained LM head to predict 'Yes' or 'No' tokens.
+
+    Instead of a linear classifier, this head re-uses the model's existing
+    vocabulary head to score the probability of generating the token 'Yes'
+    vs 'No' at the last position of the prompt. The 'Yes' and 'No' token IDs
+    are looked up from the tokenizer at init time. For 'single_task', the two
+    logits are stacked as [No, Yes] so that class index 1 corresponds to a
+    positive label. For 'multi_task', the scalar difference (yes − no) is
+    projected to 'num_tasks' outputs via a small learned linear layer.
+
+    Examples
+    --------
+    >>> import torch, torch.nn as nn
+    >>> from types import SimpleNamespace
+    >>> from chemberta4.model import CausalLMClassificationHead
+    >>> class DummyLM(nn.Module):
+    ...     def __init__(self):
+    ...         super().__init__()
+    ...         self.embed = nn.Embedding(256, 16)
+    ...         self.lm_head = nn.Linear(16, 256)
+    ...     def forward(self, input_ids, attention_mask):
+    ...         h = self.embed(input_ids)
+    ...         return SimpleNamespace(logits=self.lm_head(h))
+    >>> class DummyTokenizer:
+    ...     def encode(self, text, add_special_tokens=True):
+    ...         return [ord(text[0])]
+    >>> head = CausalLMClassificationHead(DummyLM(), DummyTokenizer(), num_tasks=1, task_type='single_task')
+    >>> input_ids = torch.zeros(2, 8, dtype=torch.long)
+    >>> mask = torch.ones(2, 8, dtype=torch.long)
+    >>> logits, loss = head(input_ids, mask)
+    >>> logits.shape
+    torch.Size([2, 2])
+    >>> loss is None
+    True
     """
 
     def __init__(
@@ -220,6 +327,31 @@ class CausalLMClassificationHead(nn.Module):
         Tuple[torch.Tensor, Optional[torch.Tensor]]
             Logits of shape '[batch, 2]' for single_task or '[batch, num_tasks]' for multi_task,
             and a scalar loss tensor if labels are provided, else None.
+
+        Examples
+        --------
+        >>> import torch, torch.nn as nn
+        >>> from types import SimpleNamespace
+        >>> from chemberta4.model import CausalLMClassificationHead
+        >>> class DummyLM(nn.Module):
+        ...     def __init__(self):
+        ...         super().__init__()
+        ...         self.embed = nn.Embedding(256, 16)
+        ...         self.lm_head = nn.Linear(16, 256)
+        ...     def forward(self, input_ids, attention_mask):
+        ...         h = self.embed(input_ids)
+        ...         return SimpleNamespace(logits=self.lm_head(h))
+        >>> class DummyTokenizer:
+        ...     def encode(self, text, add_special_tokens=True):
+        ...         return [ord(text[0])]
+        >>> head = CausalLMClassificationHead(DummyLM(), DummyTokenizer(), num_tasks=1, task_type='single_task')
+        >>> input_ids = torch.zeros(2, 8, dtype=torch.long)
+        >>> mask = torch.ones(2, 8, dtype=torch.long)
+        >>> logits, loss = head(input_ids, mask)
+        >>> logits.shape
+        torch.Size([2, 2])
+        >>> loss is None
+        True
         """
         outputs = self.model(
             input_ids=input_ids,

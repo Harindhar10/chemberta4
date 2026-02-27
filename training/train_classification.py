@@ -31,8 +31,8 @@ def run_classification_experiment(args: SimpleNamespace, task_name: str) -> None
     """
     # Get task config
     task_config = get_task(task_name)
-    log0(f"\nTask: {task_name} ({task_config.task_type})")
-    log0(f"Columns: {task_config.task_columns[:3]}{'...' if len(task_config.task_columns) > 3 else ''}")
+    log0(f"Task: {task_name} ({task_config.task_type})")
+    log0(f"Columns: {task_config.task_columns[:3]}")
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -175,7 +175,7 @@ def run_classification_experiment(args: SimpleNamespace, task_name: str) -> None
     trainer.fit(model, train_loader, val_loader)
 
     # Test
-    log0("\nRunning test evaluation...")
+    log0("Running test evaluation...")
     trainer.test(model, test_loader)
 
     # Finalize tracker
@@ -188,7 +188,7 @@ def run_classification_experiment(args: SimpleNamespace, task_name: str) -> None
         wandb.finish()
 
         checkpoint_callback = [c for c in callbacks if isinstance(c, ModelCheckpoint)][0]
-        log0(f"\nDone! Best RMSE: {checkpoint_callback.best_model_score:.4f}")
+        log0(f"Done! Best RMSE: {checkpoint_callback.best_model_score:.4f}")
 
         if args.delete_checkpoint:
             import shutil

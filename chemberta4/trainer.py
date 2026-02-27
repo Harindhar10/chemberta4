@@ -1,4 +1,3 @@
-import math
 from typing import Any, Dict, Optional
 
 import torch
@@ -9,20 +8,44 @@ from transformers import (
     AutoModelForCausalLM,
     BitsAndBytesConfig,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from torchmetrics import Accuracy, AUROC
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-from .model import ClassificationHead, CausalLMClassificationHead, RegressionHead
-from .utils import get_device_map
+from chemberta4.model import ClassificationHead, CausalLMClassificationHead, RegressionHead, CausalLMRegressionHead
+from chemberta4.utils import get_device_map
 
 
 class OLMoClassifier(pl.LightningModule):
-    """Pytorch lightning training module for classification tasks.
+    """This class implements a PyTorch Lightning module for molecular classification tasks.
 
-    Supports single-task and multi-task classification.
-    Can use either a classification head or LM head (Yes/No prediction).
-    Supports QLoRA (4-bit), LoRA, and full finetuning.
+    It supports single-task and multi-task classification.
+    It can use either a classification head or an LM head for Yes/No token prediction.
+    It supports QLoRA (4-bit quantization), LoRA, and full finetuning strategies.
+
+    Orchestrates the full classification training loop on top of OLMo (or any
+    decoder-only model). Model loading and LoRA/QLoRA setup are deferred to
+    'configure_model()' so the module can be safely instantiated on CPU before
+    a trainer is attached. Accuracy and AUROC are tracked per split; for
+    multi-task datasets, rows with all labels missing are excluded from the
+    metric update.
+
+    Examples
+    --------
+    >>> from chemberta4.trainer import OLMoClassifier
+    >>> clf = OLMoClassifier(
+    ...     model_name='allenai/OLMo-7B-hf',
+    ...     num_tasks=1,
+    ...     task_type='single_task',
+    ...     finetune_strategy='qlora',
+    ...     lr=2e-4,
+    ... )
+    >>> clf.hparams.num_tasks
+    1
+    >>> clf.hparams.finetune_strategy
+    'qlora'
+    >>> clf.model is None
+    True
     """
 
     def __init__(
@@ -66,6 +89,23 @@ class OLMoClassifier(pl.LightningModule):
             LoRA alpha (typically 2× rank).
         lora_dropout : float
             LoRA dropout rate.
+
+        Examples
+        --------
+        >>> from chemberta4.trainer import OLMoClassifier
+        >>> clf = OLMoClassifier(
+        ...     model_name='allenai/OLMo-7B-hf',
+        ...     num_tasks=1,
+        ...     task_type='single_task',
+        ...     finetune_strategy='qlora',
+        ...     lr=2e-4,
+        ... )
+        >>> clf.hparams.num_tasks
+        1
+        >>> clf.hparams.finetune_strategy
+        'qlora'
+        >>> clf.model is None
+        True
         """
         super().__init__()
         self.save_hyperparameters()
@@ -111,11 +151,11 @@ class OLMoClassifier(pl.LightningModule):
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
             )
 
-        device_map = get_device_map(self.device)
+        device_map = 'cpu' #get_device_map(self.device)
 
         if hp.use_lm_head:
             # Use AutoModelForCausalLM with LM head
@@ -359,3 +399,4 @@ class OLMoClassifier(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
         }
+
