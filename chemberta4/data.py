@@ -30,10 +30,6 @@ class MoleculeNetDataset(Dataset):
     * **Standard regression** — rows with missing labels are dropped; labels
       are stored as floats for RMSE loss.
 
-    When 'use_lm_head=True' for classification, the prompt ends with
-    ``"Answer:"`` so the language model head can score Yes/No token
-    probabilities instead of using a separate linear classifier.
-
     Examples
     --------
     >>> import pandas as pd
