@@ -5,18 +5,37 @@ from torch.utils.data import Dataset
 from typing import Optional, Dict, List, Any
 
 
+
 class PretrainingDataset(Dataset):
     """
-    Dataset for causal language modeling pretraining on SMILES.
+    This class wraps SMILES strings as a PyTorch dataset for causal language model pretraining.
 
-    Simply formats SMILES strings for next-token prediction.
+    It formats each SMILES string for next-token prediction. Each SMILES is
+    prefixed with 'prefix' (default "SMILES: ") and tokenised to a fixed
+    length with right-padding. The 'labels' tensor is identical to
+    'input_ids' except that padding positions are set to '-100' so
+    PyTorch's cross-entropy ignores them.
 
+    Examples
+    --------
+    >>> from transformers import AutoTokenizer
+    >>> from chemberta4.data import PretrainingDataset
+    >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    >>> tokenizer.pad_token = tokenizer.eos_token
+    >>> ds = PretrainingDataset(["CC", "CCO"], tokenizer, max_len=16)
+    >>> sample = ds[0]
+    >>> list(sample.keys())
+    ['input_ids', 'attention_mask', 'labels']
+    >>> sample["input_ids"].shape
+    torch.Size([16])
+    >>> (sample["labels"] == -100).any().item()
+    True
     """
 
     def __init__(
         self,
         smiles_list: List[str],
-        tokenizer,
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int = 256,
         prefix: str = "SMILES: ",
     ) -> None:
@@ -48,11 +67,6 @@ class PretrainingDataset(Dataset):
         self.labels = self.encodings["input_ids"].clone()
         self.labels[self.labels == tokenizer.pad_token_id] = -100
 
-        # Byte counts for BPB calculation
-        self.num_bytes = torch.tensor(
-            [len(t.encode("utf-8")) for t in texts], dtype=torch.long
-        )
-
         self.num_samples = len(smiles_list)
 
     def __len__(self) -> int:
@@ -70,28 +84,56 @@ class PretrainingDataset(Dataset):
         Returns
         -------
         Dict[str, torch.Tensor]
-            Dict with 'input_ids', 'attention_mask', 'labels', and
-            'num_bytes' (byte count used for BPB calculation).
+            Dict with 'input_ids', 'attention_mask', and 'labels'.
+
+        Examples
+        --------
+        >>> from transformers import AutoTokenizer
+        >>> from chemberta4.data import PretrainingDataset
+        >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        >>> tokenizer.pad_token = tokenizer.eos_token
+        >>> ds = PretrainingDataset(["CC", "CCO"], tokenizer, max_len=16)
+        >>> sample = ds[0]
+        >>> list(sample.keys())
+        ['input_ids', 'attention_mask', 'labels']
+        >>> sample["input_ids"].shape
+        torch.Size([16])
+        >>> (sample["labels"] == -100).any().item()
+        True
         """
         return {
             "input_ids": self.encodings["input_ids"][idx],
             "attention_mask": self.encodings["attention_mask"][idx],
             "labels": self.labels[idx],
-            "num_bytes": self.num_bytes[idx],
         }
 
 
 class InstructionDataset(Dataset):
     """
-    Dataset for instruction tuning (USPTO-style).
+    This class wraps instruction/input/output tuples as a PyTorch dataset for causal LM instruction tuning.
 
-    Formats instruction/input/output tuples for causal LM training.
+    It formats each sample as an instruction/input/output tuple for next-token prediction training. Each
+    sample is formatted as '"Instruction: ...\nInput: ...\nOutput: ..."'
+    and tokenised on-the-fly (lazy tokenisation). Padding tokens in 'labels'
+    are masked to '-100'.
+
+    Examples
+    --------
+    >>> from transformers import AutoTokenizer
+    >>> from chemberta4.data import InstructionDataset
+    >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    >>> tokenizer.pad_token = tokenizer.eos_token
+    >>> data = [{"instruction": "Predict product.", "input": "CC + O", "output": "CCO"}]
+    >>> ds = InstructionDataset(data, tokenizer, max_len=32)
+    >>> sample = ds[0]
+    >>> list(sample.keys())
+    ['input_ids', 'attention_mask', 'labels']
     """
 
     def __init__(
         self,
         data: List[Dict],
-        tokenizer,
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int = 512,
     ) -> None:
         """Initialise InstructionDataset.
@@ -111,16 +153,6 @@ class InstructionDataset(Dataset):
         # Materialize if streaming
         self.data = list(data)
 
-        # Precompute byte counts for BPB calculation
-        self.num_bytes = [
-            len(
-                f"Instruction: {item['instruction']}\n"
-                f"Input: {item['input']}\n"
-                f"Output: {item['output']}".encode("utf-8")
-            )
-            for item in self.data
-        ]
-
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return len(self.data)
@@ -136,8 +168,19 @@ class InstructionDataset(Dataset):
         Returns
         -------
         Dict[str, torch.Tensor]
-            Dict with 'input_ids', 'attention_mask', 'labels', and
-            'num_bytes' (byte count used for BPB calculation).
+            Dict with 'input_ids', 'attention_mask', and 'labels'.
+
+        Examples
+        --------
+        >>> from transformers import AutoTokenizer
+        >>> from chemberta4.data import InstructionDataset
+        >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        >>> tokenizer.pad_token = tokenizer.eos_token
+        >>> data = [{"instruction": "Predict product.", "input": "CC + O", "output": "CCO"}]
+        >>> ds = InstructionDataset(data, tokenizer, max_len=32)
+        >>> sample = ds[0]
+        >>> list(sample.keys())
+        ['input_ids', 'attention_mask', 'labels']
         """
         item = self.data[idx]
 
@@ -164,6 +207,5 @@ class InstructionDataset(Dataset):
             "input_ids": encodings["input_ids"].squeeze(0),
             "attention_mask": encodings["attention_mask"].squeeze(0),
             "labels": labels.squeeze(0),
-            "num_bytes": torch.tensor(self.num_bytes[idx], dtype=torch.long),
         }
 

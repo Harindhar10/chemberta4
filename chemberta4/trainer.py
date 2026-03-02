@@ -16,11 +16,31 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from .model import ClassificationHead, CausalLMClassificationHead, RegressionHead
 from .utils import get_device_map
 
-class OLMoPretrainer(pl.LightningModule):
-    """Lightning module for causal LM pretraining.
 
-    Used for pretraining on SMILES (ZINC20, PubChem) or
-    instruction tuning (USPTO).
+
+class OLMoPretrainer(pl.LightningModule):
+    """This class implements a PyTorch Lightning module for causal language model pretraining.
+
+    It handles pretraining on SMILES corpora (ZINC20, PubChem) and instruction tuning on
+    reaction datasets (USPTO).
+
+    The module handles causal LM training for both SMILES pretraining (ZINC20, PubChem)
+    and instruction tuning (USPTO). The same module is reused for both tasks
+    because both reduce to next-token prediction with cross-entropy loss. The
+    validation step additionally computes perplexity.
+
+    Examples
+    --------
+    >>> from chemberta4.trainer import OLMoPretrainer
+    >>> pt = OLMoPretrainer(
+    ...     model_name='allenai/OLMo-7B-hf',
+    ...     finetune_strategy='qlora',
+    ...     lr=1e-4,
+    ... )
+    >>> pt.hparams.finetune_strategy
+    'qlora'
+    >>> pt.model is None
+    True
     """
 
     def __init__(
@@ -57,6 +77,19 @@ class OLMoPretrainer(pl.LightningModule):
             LoRA dropout rate.
         gradient_checkpointing : bool
             Whether to enable gradient checkpointing to reduce VRAM usage.
+
+        Examples
+        --------
+        >>> from chemberta4.trainer import OLMoPretrainer
+        >>> pt = OLMoPretrainer(
+        ...     model_name='allenai/OLMo-7B-hf',
+        ...     finetune_strategy='qlora',
+        ...     lr=1e-4,
+        ... )
+        >>> pt.hparams.finetune_strategy
+        'qlora'
+        >>> pt.model is None
+        True
         """
         super().__init__()
         self.save_hyperparameters()
@@ -166,12 +199,12 @@ class OLMoPretrainer(pl.LightningModule):
         return loss
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        """Compute loss, perplexity, and BPB for a validation batch.
+        """Compute loss and perplexity for a validation batch.
 
         Parameters
         ----------
         batch : Dict[str, torch.Tensor]
-            Batch with 'input_ids', 'attention_mask', 'labels', and 'num_bytes'.
+            Batch with 'input_ids', 'attention_mask', and 'labels'.
         batch_idx : int
             Index of the current batch.
 
@@ -190,14 +223,8 @@ class OLMoPretrainer(pl.LightningModule):
         # Perplexity
         perplexity = torch.exp(loss)
 
-        # BPB: bits per byte
-        num_tokens = (batch["labels"] != -100).sum()
-        num_bytes = batch["num_bytes"].sum()
-        bpb = (loss * num_tokens) / (num_bytes * math.log(2))
-
         self.log("val/loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/perplexity", perplexity, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val/bpb", bpb, on_epoch=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self) -> Dict:
