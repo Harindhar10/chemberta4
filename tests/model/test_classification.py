@@ -92,10 +92,6 @@ class TestLastTokenPool:
         assert out[1].sum().item() == pytest.approx(H * 2.0)
 
 
-# ---------------------------------------------------------------------------
-# ClassificationHead
-# ---------------------------------------------------------------------------
-
 
 class TestClassificationHead:
     """Tests for ClassificationHead.
