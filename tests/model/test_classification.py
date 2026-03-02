@@ -76,7 +76,7 @@ class TestLastTokenPool:
         at the expected positions, then checks both the output shape and
         the extracted values.
         """
-        B, S, H = 2, 6, 8
+        B, S, H = 2, 6, 8 # batch size, sequence length, hidden size
         hidden = torch.zeros(B, S, H)
         hidden[0, 2, :] = 1.0  # sample 0: 3 real tokens -> last at idx 2
         hidden[1, 4, :] = 2.0  # sample 1: 5 real tokens -> last at idx 4
@@ -102,7 +102,7 @@ class TestClassificationHead:
     (BCEWithLogitsLoss with optional label masking).
     """
 
-    B, S = 2, 8
+    B, S = 2, 8 # batch size, sequence length
 
     def _input(self) -> tuple[torch.Tensor, torch.Tensor]:
         ids = torch.zeros(self.B, self.S, dtype=torch.long)
@@ -197,7 +197,7 @@ class TestCausalLMClassificationHead:
     are the key things to verify.
     """
 
-    B, S = 2, 8
+    B, S = 2, 8 # batch size, sequence length
 
     def _input(self) -> tuple[torch.Tensor, torch.Tensor]:
         ids = torch.zeros(self.B, self.S, dtype=torch.long)
