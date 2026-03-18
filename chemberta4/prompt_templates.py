@@ -7,6 +7,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "bace_classification": """### Question: Is this molecule a BACE-1 inhibitor?
 
 ### Molecule:
@@ -14,6 +16,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "hiv": """### Question: Does this molecule inhibit HIV replication?
 
 ### Molecule:
@@ -21,6 +25,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "clintox": """### Question: Is this molecule clinically toxic?
 
 ### Molecule:
@@ -28,6 +34,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     # Multi-task classification
     "sider": """### Question: What side effects does this drug cause?
 
@@ -36,6 +44,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "tox21": """### Question: Predict toxicity across multiple assays for this molecule.
 
 ### Molecule:
@@ -43,7 +53,10 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     # Regression
+
     "clearance": """### Question: Predict intrinsic hepatic clearance from SMILES.
 
 ### Molecule:
@@ -51,6 +64,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "delaney": """### Question: Predict aqueous solubility from SMILES.
 
 ### Molecule:
@@ -58,6 +73,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "freesolv": """### Question: Predict hydration free energy from SMILES.
 
 ### Molecule:
@@ -65,6 +82,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "lipo": """### Question: Predict lipophilicity from SMILES.
 
 ### Molecule:
@@ -72,6 +91,8 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     "bace_regression": """### Question: What is the BACE-1 inhibition strength (pIC50) of this molecule?
 
 ### Molecule:
@@ -79,7 +100,10 @@ PROMPT_TEMPLATES = {
 
 ### Answer:
 """,
+
+
     # Generation / pretraining
     "zinc20": """SMILES: {smiles}""",
+
     "pubchem": """SMILES: {smiles}""",
 }
