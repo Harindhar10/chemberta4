@@ -117,14 +117,14 @@ class TestGPTFeaturizer:
 
         The dummy model must produce ``(B, 2)`` logits and a finite loss.
         """
-        # -- 1. Write a small CSV -----------------------------------------
+        # Write a small CSV
         csv_path = tmp_path / "train.csv"
         pd.DataFrame({
             "smiles": ["CCO", "C1=CC=CC=C1", "CC(=O)O", "C"],
             "p_np": [1, 0, 1, 0],
         }).to_csv(csv_path, index=False)
 
-        # -- 2. CSVLoader + GPTFeaturizer
+        # Deepchem's CSVLoader + GPTFeaturizer
         featurizer = GPTFeaturizer(load_tokenizer, task_name="bbbp", task_type="single_task")
         loader = dc.data.CSVLoader(
             tasks=["p_np"],
@@ -134,11 +134,11 @@ class TestGPTFeaturizer:
         )
         disk_ds = loader.create_dataset(str(csv_path))
 
-        # -- 3. Wrap for PyTorch 
-        torch_ds = _TorchIndexDiskDataset(disk_ds)
+        # Wrap Deepchem's DiskDataset with _TorchIndexDiskDataset to make it a pytorch dataset
+        torch_ds = dc.data._TorchIndexDiskDataset(disk_ds)
         assert len(torch_ds) == 4
 
-        # -- 4. DataLoader
+        # DataLoader
         dl = DataLoader(torch_ds, batch_size=2, shuffle=False)
         batch = next(iter(dl))
 
@@ -152,7 +152,7 @@ class TestGPTFeaturizer:
         assert attention_mask.shape == (2, 128)
         assert labels.dtype == torch.long
 
-        # -- 5. Forward pass through dummy model
+        #Forward pass through dummy model
         model = DummyOLMoClassifier(vocab_size=load_tokenizer.vocab_size, hidden_dim=32, num_tasks=1)
         model.configure_model()
         logits, loss = model(input_ids, attention_mask, labels)
