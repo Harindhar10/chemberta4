@@ -330,4 +330,86 @@ class Olmo(HuggingFaceModel):
                     del data['model_state_dict']['classifier.dense.weight']
                 self.model.load_state_dict(data['model_state_dict'],
                                            strict=False)
+
+    def generate(self,
+                 inputs: list,
+                 max_new_tokens: int = 128,
+                 do_sample: bool = False,
+                 temperature: float = 1.0,
+                 top_k: Optional[int] = None,
+                 top_p: float = 1.0,
+                 num_beams: int = 1,
+                 **kwargs) -> list:
+        """Generate text continuations for a list of input strings.
+
+        This method is only valid when the model was initialised with `task='clm'`.
+        It tokenizes the inputs, runs the underlying `OlmoForCausalLM.generate()`
+        and decodes the output tokens back to strings.
+
+        Parameters
+        ----------
+        inputs: list of str
+            Input strings to condition generation on. These can be raw SMILES
+            (e.g. ``["CCO", "c1ccccc1"]``) or prompt-formatted strings produced
+            by :class:`~chemberta4.gpt_featurizer.PromptFeaturizer`
+            (e.g. ``["SMILES: CCO", "SMILES: c1ccccc1"]``).
+        max_new_tokens: int, default 128
+            Maximum number of new tokens to generate (does not count the prompt).
+        do_sample: bool, default False
+            If ``True``, use multinomial sampling; otherwise use greedy decoding.
+        temperature: float, default 1.0
+            Sampling temperature. Values < 1.0 make the distribution sharper;
+            values > 1.0 make it flatter. Only used when ``do_sample=True``.
+        top_k: int or None, default None
+            Keep only the top-k most probable tokens at each step.
+            ``None`` disables top-k filtering.
+        top_p: float, default 1.0
+            Nucleus sampling — keep the smallest set of tokens whose cumulative
+            probability exceeds *top_p*. ``1.0`` disables nucleus filtering.
+        num_beams: int, default 1
+            Number of beams for beam-search decoding. ``1`` disables beam search.
+        **kwargs
+            Additional keyword arguments forwarded directly to
+            ``OlmoForCausalLM.generate()``.
+
+        Returns
+        -------
+        list of str
+            Decoded generated sequences, one per input string.
+
+        Raises
+        ------
+        ValueError
+            If the model was not initialised with ``task='clm'``.
+
+        Example
+        -------
+        >>> from chemberta4.olmo import Olmo
+        >>> model = Olmo(task='clm', tokenizer_path='allenai/olmo-7b-hf')
+        >>> outputs = model.generate(["SMILES: CCO", "SMILES: c1ccccc1"], max_new_tokens=50)
+        >>> print(outputs)
+        """
+        if self.task != 'clm':
+            raise ValueError(
+                "generate() is only supported for task='clm'. "
+                f"Current task is '{self.task}'."
+            )
+
+        tokens = self.tokenizer(inputs, padding=True, return_tensors="pt")
+        input_ids = tokens['input_ids'].to(self.device)
+        attention_mask = tokens['attention_mask'].to(self.device)
+
+        output_ids = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            num_beams=num_beams,
+            **kwargs,
+        )
+
+        return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
         
