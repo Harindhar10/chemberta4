@@ -6,8 +6,15 @@ import torch.nn as nn
 
 class OlmoForSequenceClassification(GenericForSequenceClassification, OlmoPreTrainedModel):
     """
-    Olmo Model with a sequence classification head on top (a linear layer on top of the pooled output).
-    
+    OLMo model adapted for sequence classification tasks.
+
+    This class extends the base OLMo model by adding a lightweight classification
+    head on top of the pooled sequence representation. The head consists of a single
+    linear layer that maps the hidden representation to the desired number of labels.
+
+    The model is suitable for tasks such as regression (num_labels=1) or
+    classification (num_labels > 1).
+
     Example:
     -------
     >>> model = OlmoForSequenceClassification.from_pretrained(  "allenai/OLMo-7b-hf",
@@ -25,7 +32,8 @@ class OlmoForSequenceClassification(GenericForSequenceClassification, OlmoPreTra
     def __init__(self, config):
         super(GenericForSequenceClassification, self).__init__(config)
         self.num_labels = config.num_labels
-        # Similar to `self.model = AutoModel.from_config(config)` but allows to change the base model name if needed in the child class
+        # Similar to `self.model = AutoModel.from_config(config)` but allows to change the base 
+        # model name if needed in the child class
         setattr(self, self.base_model_prefix, AutoModel.from_config(config))
         self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
 

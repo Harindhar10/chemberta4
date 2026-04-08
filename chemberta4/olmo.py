@@ -1,10 +1,11 @@
 from typing import Dict, Any, Tuple, Optional
 #from deepchem.models.torch_models.hf_models import HuggingFaceModel
-from deepchem.models import HuggingFaceModel
+from deepchem.models.torch_models import HuggingFaceModel
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
-from transformers import AutoTokenizer, OlmoConfig, OlmoForCausalLM, BitsAndBytesConfig, AutoModelForCausalLM, AutoModel
-from modeling_olmo import OlmoForSequenceClassification
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, OlmoConfig, OlmoForCausalLM, BitsAndBytesConfig
+
+from deepchem.models.torch_models.olmo_layers import OlmoForSequenceClassification
 from transformers.modeling_utils import PreTrainedModel
 try:
     import torch
@@ -12,10 +13,11 @@ try:
 except:
     has_torch = False
 import gc, torch
-
+import torch.nn as nn
 
 
 class Olmo(HuggingFaceModel):
+ 
     """This class enables training and prediction using Olmo, a decoder-only transformer through the DeepChem API.
 
     It supports pretraining via causal language modeling, finetuning via regression, 
@@ -44,10 +46,10 @@ class Olmo(HuggingFaceModel):
     >>> import tempfile
     >>> import shutil
     >>> tempdir = tempfile.mkdtemp()
-
-    >>> # preparing dataset
     >>> import pandas as pd
     >>> import deepchem as dc
+    >>>
+    >>> # preparing dataset
     >>> smiles = ["CCN(CCSC)C(=O)N[C@@](C)(CC)C(F)(F)F","CC1(C)CN(C(=O)Nc2cc3ccccc3nn2)C[C@@]2(CCOC2)O1"]
     >>> labels = [3.112,2.432]
     >>> df = pd.DataFrame(list(zip(smiles, labels)), columns=["smiles", "task1"])
@@ -55,33 +57,26 @@ class Olmo(HuggingFaceModel):
     ...     df.to_csv(tmpfile.name)
     ...     loader = dc.data.CSVLoader(["task1"], feature_field="smiles", featurizer=dc.feat.DummyFeaturizer())
     ...     dataset = loader.create_dataset(tmpfile.name)
-
-    >>> # pretraining
-    >>> from chemberta4.olmo import Olmo
-    >>> pretrain_model_dir = os.path.join(tempdir, 'pretrain-model')
-    >>> tokenizer_path = "allenai/olmo-7b-hf"
-    >>> config = {'torch_dtype': torch.float16}
-    >>> pretrain_model = Olmo(task="regression",
-            tokenizer_path="allenai/Olmo-7b-hf",
-            config = config)
-    >>> pretraining_loss = pretrain_model.fit(dataset, nb_epoch=1)
-
-    >>> # finetuning in regression mode
-    >>> finetune_model_dir = os.path.join(tempdir, 'finetune-model')
-    >>> pretrain_model = Olmo(task="regression",
-            tokenizer_path="allenai/Olmo-7b-hf",
-            config = config)
-    >>> finetune_model.load_from_pretrained(pretrain_model_dir)
-    >>> finetuning_loss = finetune_model.fit(dataset, nb_epoch=1)
-
-    >>> # prediction and evaluation
-    >>> result = finetune_model.predict(dataset)
-    >>> eval_results = finetune_model.evaluate(dataset, metrics=dc.metrics.Metric(dc.metrics.mae_score))
-
-    >>> # removing temporary directory
-    >>> if os.path.exists(tempdir):
-    ...     shutil.rmtree(tempdir)
-
+    >>>
+    >>> model = Olmo(task="regression",
+                tokenizer_path=t"allenai/olmo-7b-hf",
+                finetune_strategy = 'qlora',
+                config = {'torch_dtype': torch.float16},
+                batch_size = 2)
+    >>>
+    >>> from deepchem.models.lightning import LightningTorchModel
+    >>> trainer = LightningTorchModel(model=model,
+    ...                             batch_size=2,
+    ...                             max_epochs=1,
+    ...                             enable_progress_bar=True,
+    ...                             accelerator="gpu",
+    ...                             strategy = "ddp",
+    ...                             devices = -1,
+    ...                             log_every_n_steps=1
+    ...                             )
+    >>>
+    >>> trainer.fit(dataset, num_workers=0)
+    >>> predictions = trainer.predict(dataset)
     """
 
     def __init__(self,
@@ -91,36 +86,34 @@ class Olmo(HuggingFaceModel):
                  config: Dict[Any, Any] = {},
                  **kwargs):
         self.n_tasks = n_tasks
-
         self.finetune_strategy = kwargs.get("finetune_strategy", "qlora")
-        if self.finetune_strategy not in {"qlora", "lora", "full_finetune"}:
-            raise ValueError("Invalid finetune_strategy")
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path,
                                                   trust_remote_code=True)
         self.model: PreTrainedModel
-        chemberta_config = OlmoConfig(vocab_size=tokenizer.vocab_size,
+        olmo_config = OlmoConfig(vocab_size=tokenizer.vocab_size,
                                          **config)
-        print(chemberta_config)
+
         if task == 'clm':
-            self.model = OlmoForCausalLM(chemberta_config)
-        if task == 'mtr':
-            chemberta_config.problem_type = 'regression'
-            chemberta_config.num_labels = n_tasks
-            self.model = OlmoForSequenceClassification(chemberta_config)
+           self.model = OlmoForCausalLM(olmo_config)
+        elif task == 'mtr':
+            olmo_config.problem_type = 'regression'
+            olmo_config.num_labels = n_tasks
+            self.model = OlmoForSequenceClassification(olmo_config)
         elif task == 'regression':
-            chemberta_config.problem_type = 'regression'
-            chemberta_config.num_labels = n_tasks
-            self.model = OlmoForSequenceClassification(chemberta_config)
+            olmo_config.problem_type = 'regression'
+            olmo_config.num_labels = n_tasks
+            self.model = OlmoForSequenceClassification(olmo_config)
         elif task == 'classification':
             if n_tasks == 1:
-                chemberta_config.problem_type = 'single_label_classification'
+                olmo_config.problem_type = 'single_label_classification'
             else:
-                chemberta_config.problem_type = 'multi_label_classification'
-                chemberta_config.num_labels = n_tasks
-                self.model = OlmoForSequenceClassification(chemberta_config)
+                olmo_config.problem_type = 'multi_label_classification'
+                olmo_config.num_labels = n_tasks
+                self.model = OlmoForSequenceClassification(olmo_config)
         else:
             raise ValueError('invalid task specification')
+        self.config = olmo_config
 
         super(Olmo, self).__init__(model=self.model,
                                         task=task,
@@ -139,6 +132,7 @@ class Olmo(HuggingFaceModel):
         """
 
         smiles_batch, y, w = batch
+
         tokens = self.tokenizer(smiles_batch[0].tolist(),
                                 padding=True,
                                 return_tensors="pt")
@@ -224,6 +218,7 @@ class Olmo(HuggingFaceModel):
             the pretrain model and current model, we delete the projection
             layers weights.
         """
+        
         if model_dir is None:
             model_dir = self.model_dir
 
@@ -236,12 +231,11 @@ class Olmo(HuggingFaceModel):
             # init function creates a randomly initialised model. It is deleted before the 
             # pretained weights are loaded to reduce peak memory usage (having 2 copies of the model at the same time).
 
-            self.model.to("cpu")   # not required, but safer
             del self.model
             gc.collect()
             torch.cuda.empty_cache()
 
-            bnb_config = None
+            self.bnb_config = None
             if self.finetune_strategy == 'qlora':
                 self.bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -255,20 +249,22 @@ class Olmo(HuggingFaceModel):
                     "allenai/olmo-7b-hf", 
                     quantization_config = self.bnb_config,
                     trust_remote_code=True,
-                    device_map = 'cpu',
                     low_cpu_mem_usage = True,
+                    torch_dtype=torch.float16,
                     **self.config)
     
                 self.task_type = "CAUSAL_LM"
 
-
+        
             elif self.task in ['mtr', 'regression', 'classification']:
                 self.model = OlmoForSequenceClassification.from_pretrained(
                             "allenai/olmo-7b-hf",
                             quantization_config = self.bnb_config,
                             trust_remote_code=True, 
-                            device_map = 'cpu',
                             low_cpu_mem_usage = True,
+                            torch_dtype=torch.float16,
+                            problem_type = 'regression',
+                            num_labels = self.n_tasks,
                             **self.config)
     
                 self.task_type = "SEQ_CLS"
@@ -277,8 +273,8 @@ class Olmo(HuggingFaceModel):
                 self.model = AutoModel.from_pretrained("allenai/olmo-7b-hf",
                                                        quantization_config = self.bnb_config,
                                                        trust_remote_code=True,
-                                                       device_map = 'cpu',
                                                        low_cpu_mem_usage = True,
+                                                       torch_dtype=torch.float16,
                                                        **self.config)
                 self.task_type = "CAUSAL_LM"
     
@@ -287,7 +283,7 @@ class Olmo(HuggingFaceModel):
                     self.model, use_gradient_checkpointing=True
                 )
 
-            if self.finetune_strategy != "full_finetune":
+            if self.finetune_strategy == "lora" or self.finetune_strategy == "qlora" :
                 lora_cfg = LoraConfig(
                     r=32,
                     lora_alpha=64,
@@ -296,7 +292,7 @@ class Olmo(HuggingFaceModel):
                     bias="none",
                     task_type=self.task_type,
                 )
-            self.model = get_peft_model(self.model, lora_cfg)
+                self.model = get_peft_model(self.model, lora_cfg)
 
         elif not from_hf_checkpoint:
             checkpoints = sorted(self.get_checkpoints(model_dir))
@@ -330,86 +326,3 @@ class Olmo(HuggingFaceModel):
                     del data['model_state_dict']['classifier.dense.weight']
                 self.model.load_state_dict(data['model_state_dict'],
                                            strict=False)
-
-    def generate(self,
-                 inputs: list,
-                 max_new_tokens: int = 128,
-                 do_sample: bool = False,
-                 temperature: float = 1.0,
-                 top_k: Optional[int] = None,
-                 top_p: float = 1.0,
-                 num_beams: int = 1,
-                 **kwargs) -> list:
-        """Generate text continuations for a list of input strings.
-
-        This method is only valid when the model was initialised with `task='clm'`.
-        It tokenizes the inputs, runs the underlying `OlmoForCausalLM.generate()`
-        and decodes the output tokens back to strings.
-
-        Parameters
-        ----------
-        inputs: list of str
-            Input strings to condition generation on. These can be raw SMILES
-            (e.g. ``["CCO", "c1ccccc1"]``) or prompt-formatted strings produced
-            by :class:`~chemberta4.gpt_featurizer.PromptFeaturizer`
-            (e.g. ``["SMILES: CCO", "SMILES: c1ccccc1"]``).
-        max_new_tokens: int, default 128
-            Maximum number of new tokens to generate (does not count the prompt).
-        do_sample: bool, default False
-            If ``True``, use multinomial sampling; otherwise use greedy decoding.
-        temperature: float, default 1.0
-            Sampling temperature. Values < 1.0 make the distribution sharper;
-            values > 1.0 make it flatter. Only used when ``do_sample=True``.
-        top_k: int or None, default None
-            Keep only the top-k most probable tokens at each step.
-            ``None`` disables top-k filtering.
-        top_p: float, default 1.0
-            Nucleus sampling — keep the smallest set of tokens whose cumulative
-            probability exceeds *top_p*. ``1.0`` disables nucleus filtering.
-        num_beams: int, default 1
-            Number of beams for beam-search decoding. ``1`` disables beam search.
-        **kwargs
-            Additional keyword arguments forwarded directly to
-            ``OlmoForCausalLM.generate()``.
-
-        Returns
-        -------
-        list of str
-            Decoded generated sequences, one per input string.
-
-        Raises
-        ------
-        ValueError
-            If the model was not initialised with ``task='clm'``.
-
-        Example
-        -------
-        >>> from chemberta4.olmo import Olmo
-        >>> model = Olmo(task='clm', tokenizer_path='allenai/olmo-7b-hf')
-        >>> outputs = model.generate(["SMILES: CCO", "SMILES: c1ccccc1"], max_new_tokens=50)
-        >>> print(outputs)
-        """
-        if self.task != 'clm':
-            raise ValueError(
-                "generate() is only supported for task='clm'. "
-                f"Current task is '{self.task}'."
-            )
-
-        tokens = self.tokenizer(inputs, padding=True, return_tensors="pt")
-        input_ids = tokens['input_ids'].to(self.device)
-        attention_mask = tokens['attention_mask'].to(self.device)
-
-        output_ids = self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            num_beams=num_beams,
-            **kwargs,
-        )
-
-        return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-        
