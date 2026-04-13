@@ -1,9 +1,7 @@
 from typing import Dict, Any, Tuple, Optional
 from deepchem.models.torch_models import HuggingFaceModel
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, OlmoConfig, OlmoForCausalLM, BitsAndBytesConfig
-
 from deepchem.models.torch_models.olmo_layers import OlmoForSequenceClassification
 from transformers.modeling_utils import PreTrainedModel
 try:
@@ -13,6 +11,52 @@ except:
     has_torch = False
 import gc, torch
 import torch.nn as nn
+from transformers.modeling_layers import GenericForSequenceClassification
+from transformers import OlmoPreTrainedModel, AutoModel
+import torch.nn as nn
+
+
+class OlmoForSequenceClassification(GenericForSequenceClassification, OlmoPreTrainedModel):
+    """
+    OLMo model adapted for sequence classification tasks.
+
+    This class extends the base OLMo model by adding a lightweight classification
+    head on top of the pooled sequence representation. The head consists of a single
+    linear layer that maps the hidden representation to the desired number of labels.
+
+    The model is suitable for tasks such as regression (num_labels=1) or
+    classification (num_labels > 1).
+
+    Example:
+    -------
+    >>> model = OlmoForSequenceClassification.from_pretrained(  "allenai/OLMo-7b-hf",
+    ...                                                        num_labels=1,
+    ...                                                        torch_dtype=torch.float16,)   
+    >>> tokenizer = AutoTokenizer.from_pretrained('allenai/olmo-7b-hf', trust_remote_code=True) 
+    >>> input = tokenizer(["CCCl"],
+    ...                    return_tensors="pt")
+    >>> output = model(**input)
+    >>> output.logits
+    >>> output.loss
+    """
+    base_model_prefix = "model"
+
+    def __init__(self, config):
+        super(GenericForSequenceClassification, self).__init__(config)
+        self.num_labels = config.num_labels
+        # Similar to `self.model = AutoModel.from_config(config)` but allows to change the base 
+        # model name if needed in the child class
+        setattr(self, self.base_model_prefix, AutoModel.from_config(config))
+        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
+
+        # Linear layer gets initialised in full precision even when the model's parameters are
+        # half precision. This leads to an error, so the linear layer's weights' dtype is coverted to the 
+        # model's parameters' dtype
+        self.score = self.score.to(next(self.parameters()).dtype)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+    
 
 
 class Olmo(HuggingFaceModel):
@@ -89,6 +133,11 @@ class Olmo(HuggingFaceModel):
             Path containing pretrained tokenizer used to tokenize SMILES string for model inputs. The tokenizer path can either be a huggingFace tokenizer model or a path in the local machine containing the tokenizer.
         n_tasks: int, default 1
             Number of prediction targets for a multitask learning model
+        config: Dict[Any, Any], default {}
+            Additional keyword arguments forwarded to OlmoConfig. Use this to override
+            architecture defaults such as `hidden_size`, `num_hidden_layers`, or
+            `torch_dtype`. When loading from a HuggingFace checkpoint these same keys
+            are also forwarded to `from_pretrained`.
         """
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path,
@@ -217,56 +266,48 @@ class Olmo(HuggingFaceModel):
             self,
             model_dir: Optional[str] = None,
             from_hf_checkpoint: bool = False):
-        """Load HuggingFace model from a pretrained checkpoint.
+        """Load pretrained OLMo weights into the current model instance.
 
-        The utility can be used for loading a model from a checkpoint.
-        Given `model_dir`, it checks for existing checkpoint in the directory.
-        If a checkpoint exists, the models state is loaded from the checkpoint.
+        Overrides `HuggingFaceModel.load_from_pretrained` to support two loading paths:
 
-        If the option `from_hf_checkpoint` is set as True, then it loads a pretrained
-        model using HuggingFace models `from_pretrained` method. This option
-        interprets model_dir as a model id of a pretrained model hosted inside a model repo
-        on huggingface.co or path to directory containing model weights saved using `save_pretrained`
-        method of a HuggingFace model.
+        **HuggingFace checkpoint** (`from_hf_checkpoint=True`):
+            Loads weights from a HuggingFace Hub model ID or a local directory created
+            by `save_pretrained`. The randomly-initialised model built during `__init__`
+            is deleted first to avoid holding two copies of the model in memory
+            simultaneously. The correct model class is selected based on `task`:
 
-        Parameter
+            - ``clm``: `AutoModelForCausalLM`
+            - ``regression`` / ``mtr`` / ``classification``: `OlmoForSequenceClassification`
+              — a custom head not present in the HuggingFace transformers library, which
+              adds a linear scoring layer on top of the decoder.
+
+            After loading, `apply_peft` is called to optionally wrap the model with LoRA
+            or QLoRA adapters depending on `finetune_strategy`.
+
+        **Local DeepChem checkpoint** (`from_hf_checkpoint=False`):
+            Loads weights from a checkpoint saved by `save_checkpoint`. The
+            ``module.`` prefix added by PyTorch's DistributedDataParallel is stripped
+            from state-dict keys automatically. Output projection weights
+            (``classifier.out_proj``, ``classifier.dense``) are dropped before loading
+            so that a pretrain checkpoint with a different number of output labels can
+            be used to initialise a finetuning model (`strict=False`).
+
+        Parameters
         ----------
-        model_dir: str
-            Directory containing model checkpoint
+        model_dir: str, optional
+            HuggingFace Hub model ID, path to a `save_pretrained` directory, or path
+            to a directory containing DeepChem checkpoints. Defaults to `self.model_dir`
+            if not provided.
         from_hf_checkpoint: bool, default False
-            Loads a pretrained model from HuggingFace checkpoint.
+            When True, load from a HuggingFace Hub checkpoint using `from_pretrained`.
+            When False, load from a local DeepChem checkpoint file.
 
         Example
         -------
-        >>> from transformers import AutoTokenizer
-        >>> tokenizer = AutoTokenizer.from_pretrained("allenai/olmo-7b-hf")
-
-        >>> from deepchem.models.torch_models.hf_models import HuggingFaceModel
-        >>> from transformers.models.olmo import OlmoForCausalLM, OlmoModel, OlmoConfig
-        >>> config = OlmoConfig(vocab_size=tokenizer.vocab_size)
-        >>> model = OlmoForCausalLM(config)
-        >>> pretrain_model = HuggingFaceModel(model=model, tokenizer=tokenizer, task='clm', model_dir='model-dir')
-        >>> pretrain_model.save_checkpoint()
-
-        >>> from modelling_olmo import OlmoForSequenceClassification
-        >>> config = OlmoConfig(vocab_size=tokenizer.vocab_size)
-        >>> model = OlmoForSequenceClassification(config)
-        >>> finetune_model = HuggingFaceModel(model=model, task='classification', tokenizer=tokenizer, model_dir='model-dir')
-
-        >>> finetune_model.load_from_pretrained()
-
-        Note
-        ----
-        1. Use `load_from_pretrained` method only to load a pretrained model - a
-            model trained on a different task like Masked Language Modeling or
-            Multitask Regression. To `restore` a model, use the `restore` method.
-
-        2. A pretrain model has different number of target tasks for pretraining and a finetune
-            model has different number of target tasks for finetuning. Thus, they both have different
-            number of projection outputs in the last layer. To avoid a mismatch
-            in the weights of the output projection layer (last layer) between
-            the pretrain model and current model, we delete the projection
-            layers weights.
+        >>> # Loading from HuggingFace Hub and applying QLoRA adapters:
+        >>> model = Olmo(task='regression', tokenizer_path='allenai/olmo-7b-hf',
+        ...              finetune_strategy='qlora', config={'torch_dtype': torch.float16})
+        >>> model.load_from_pretrained('allenai/olmo-7b-hf', from_hf_checkpoint=True)
         """
 
         if model_dir is None:
