@@ -1,5 +1,4 @@
 from typing import Dict, Any, Tuple, Optional
-#from deepchem.models.torch_models.hf_models import HuggingFaceModel
 from deepchem.models.torch_models import HuggingFaceModel
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
@@ -26,19 +25,6 @@ class Olmo(HuggingFaceModel):
 
     It uses a tokenizer to create input tokens for the models.
     The default tokenizer model is GPTNeoXTokenizerFast.
-
-    Parameters
-    ----------
-    task: str
-        The task defines the type of learning task in the model. The supported tasks are
-         - `clm` - causal language modeling commonly used in pretraining
-         - `mtr` - multitask regression - a task used for both pretraining base models and finetuning
-         - `regression` - use it for regression tasks, like property prediction
-         - `classification` - use it for classification tasks
-    tokenizer_path: str
-        Path containing pretrained tokenizer used to tokenize SMILES string for model inputs. The tokenizer path can either be a huggingFace tokenizer model or a path in the local machine containing the tokenizer.
-    n_tasks: int, default 1
-        Number of prediction targets for a multitask learning model
 
     Example
     -------
@@ -84,9 +70,26 @@ class Olmo(HuggingFaceModel):
                  tokenizer_path: str = 'allenai/olmo-7b-hf',
                  n_tasks: int = 1,
                  config: Dict[Any, Any] = {},
+                 finetune_strategy: str = 'full_finetune',
                  **kwargs):
+        if finetune_strategy not in ('lora', 'qlora', 'full_finetune'):
+            raise ValueError(f"finetune_strategy must be 'lora', 'qlora', or 'full_finetune', got '{finetune_strategy}'")
         self.n_tasks = n_tasks
-        self.finetune_strategy = kwargs.get("finetune_strategy", "qlora")
+        self.finetune_strategy = finetune_strategy
+        """
+        Parameters
+        ----------
+        task: str
+            The task defines the type of learning task in the model. The supported tasks are
+            - `clm` - causal language modeling commonly used in pretraining
+            - `mtr` - multitask regression - a task used for both pretraining base models and finetuning
+            - `regression` - use it for regression tasks, like property prediction
+            - `classification` - use it for classification tasks
+        tokenizer_path: str
+            Path containing pretrained tokenizer used to tokenize SMILES string for model inputs. The tokenizer path can either be a huggingFace tokenizer model or a path in the local machine containing the tokenizer.
+        n_tasks: int, default 1
+            Number of prediction targets for a multitask learning model
+        """
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path,
                                                   trust_remote_code=True)
@@ -96,11 +99,7 @@ class Olmo(HuggingFaceModel):
 
         if task == 'clm':
            self.model = OlmoForCausalLM(olmo_config)
-        elif task == 'mtr':
-            olmo_config.problem_type = 'regression'
-            olmo_config.num_labels = n_tasks
-            self.model = OlmoForSequenceClassification(olmo_config)
-        elif task == 'regression':
+        elif task == 'mtr' or task == 'regression':
             olmo_config.problem_type = 'regression'
             olmo_config.num_labels = n_tasks
             self.model = OlmoForSequenceClassification(olmo_config)
@@ -110,7 +109,7 @@ class Olmo(HuggingFaceModel):
             else:
                 olmo_config.problem_type = 'multi_label_classification'
                 olmo_config.num_labels = n_tasks
-                self.model = OlmoForSequenceClassification(olmo_config)
+            self.model = OlmoForSequenceClassification(olmo_config)
         else:
             raise ValueError('invalid task specification')
         self.config = olmo_config
@@ -132,6 +131,9 @@ class Olmo(HuggingFaceModel):
         """
 
         smiles_batch, y, w = batch
+
+        if w is not None:
+            w = torch.tensor(w, dtype=torch.float).to(self.device)
 
         tokens = self.tokenizer(smiles_batch[0].tolist(),
                                 padding=True,
@@ -162,6 +164,54 @@ class Olmo(HuggingFaceModel):
 
             inputs = {**tokens, 'labels': y}
             return inputs, y, w
+
+    def build_bnb_config(self) -> Optional[BitsAndBytesConfig]:
+        """Build and return a BitsAndBytesConfig for qlora, or None for other strategies.
+
+        Returns
+        -------
+        Optional[BitsAndBytesConfig]
+            A 4-bit quantization config when finetune_strategy is 'qlora', else None.
+        """
+        if self.finetune_strategy == 'qlora':
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+        return None
+
+    def apply_peft(self, model: PreTrainedModel, task_type: str) -> PreTrainedModel:
+        """Optionally apply k-bit training preparation and LoRA/QLoRA adapters to the model.
+
+        Parameters
+        ----------
+        model: PreTrainedModel
+            The loaded pretrained model.
+        task_type: str
+            PEFT task type string — "CAUSAL_LM" or "SEQ_CLS".
+
+        Returns
+        -------
+        PreTrainedModel
+            The model, possibly wrapped with PEFT adapters.
+        """
+        if self.finetune_strategy == 'qlora':
+            model = prepare_model_for_kbit_training(
+                model, use_gradient_checkpointing=True
+            )
+        if self.finetune_strategy in ('lora', 'qlora'):
+            lora_cfg = LoraConfig(
+                r=32,
+                lora_alpha=64,
+                target_modules=["q_proj", "k_proj", "v_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type=task_type,
+            )
+            model = get_peft_model(model, lora_cfg)
+        return model
 
     def load_from_pretrained(  # type: ignore
             self,
@@ -218,7 +268,7 @@ class Olmo(HuggingFaceModel):
             the pretrain model and current model, we delete the projection
             layers weights.
         """
-        
+
         if model_dir is None:
             model_dir = self.model_dir
 
@@ -228,71 +278,48 @@ class Olmo(HuggingFaceModel):
             # To use `load_from_pretrained` in DeepChem, we need to follow a two step process
             # of initialising class instance and then loading weights via `load_from_pretrained`.
 
-            # init function creates a randomly initialised model. It is deleted before the 
+            # init function creates a randomly initialised model. It is deleted before the
             # pretained weights are loaded to reduce peak memory usage (having 2 copies of the model at the same time).
 
             del self.model
             gc.collect()
             torch.cuda.empty_cache()
 
-            self.bnb_config = None
-            if self.finetune_strategy == 'qlora':
-                self.bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_compute_dtype=torch.float16
-                )
+            bnb_config = self.build_bnb_config()
 
             if self.task == 'clm':
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    "allenai/olmo-7b-hf", 
-                    quantization_config = self.bnb_config,
+                    model_dir,
+                    quantization_config=bnb_config,
                     trust_remote_code=True,
-                    low_cpu_mem_usage = True,
+                    low_cpu_mem_usage=True,
                     torch_dtype=torch.float16,
                     **self.config)
-    
-                self.task_type = "CAUSAL_LM"
+                task_type = "CAUSAL_LM"
 
-        
             elif self.task in ['mtr', 'regression', 'classification']:
                 self.model = OlmoForSequenceClassification.from_pretrained(
-                            "allenai/olmo-7b-hf",
-                            quantization_config = self.bnb_config,
-                            trust_remote_code=True, 
-                            low_cpu_mem_usage = True,
-                            torch_dtype=torch.float16,
-                            problem_type = 'regression',
-                            num_labels = self.n_tasks,
-                            **self.config)
-    
-                self.task_type = "SEQ_CLS"
-    
-            else:
-                self.model = AutoModel.from_pretrained("allenai/olmo-7b-hf",
-                                                       quantization_config = self.bnb_config,
-                                                       trust_remote_code=True,
-                                                       low_cpu_mem_usage = True,
-                                                       torch_dtype=torch.float16,
-                                                       **self.config)
-                self.task_type = "CAUSAL_LM"
-    
-            if self.finetune_strategy == "qlora":
-                self.model = prepare_model_for_kbit_training(
-                    self.model, use_gradient_checkpointing=True
-                )
+                    model_dir,
+                    quantization_config=bnb_config,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                    torch_dtype=torch.float16,
+                    problem_type='regression',
+                    num_labels=self.n_tasks,
+                    **self.config)
+                task_type = "SEQ_CLS"
 
-            if self.finetune_strategy == "lora" or self.finetune_strategy == "qlora" :
-                lora_cfg = LoraConfig(
-                    r=32,
-                    lora_alpha=64,
-                    target_modules=["q_proj", "k_proj", "v_proj"],
-                    lora_dropout=0.05,
-                    bias="none",
-                    task_type=self.task_type,
-                )
-                self.model = get_peft_model(self.model, lora_cfg)
+            else:
+                self.model = AutoModel.from_pretrained(
+                    model_dir,
+                    quantization_config=bnb_config,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                    torch_dtype=torch.float16,
+                    **self.config)
+                task_type = "CAUSAL_LM"
+
+            self.model = self.apply_peft(self.model, task_type)
 
         elif not from_hf_checkpoint:
             checkpoints = sorted(self.get_checkpoints(model_dir))
