@@ -56,7 +56,7 @@ class OlmoForSequenceClassification(GenericForSequenceClassification, OlmoPreTra
 
         # Initialize weights and apply final processing
         self.post_init()
-    
+
 
 
 class Olmo(HuggingFaceModel):
@@ -93,7 +93,9 @@ class Olmo(HuggingFaceModel):
                 finetune_strategy = 'qlora',
                 config = {'torch_dtype': torch.float16},
                 batch_size = 2)
-    >>>
+    >>> model.fit(dataset,nb_epoch=1)
+
+    >>> # Distributed training with pytorch lightning
     >>> from deepchem.models.lightning import LightningTorchModel
     >>> trainer = LightningTorchModel(model=model,
     ...                             batch_size=2,
@@ -161,6 +163,11 @@ class Olmo(HuggingFaceModel):
             self.model = OlmoForSequenceClassification(olmo_config)
         else:
             raise ValueError('invalid task specification')
+
+        if self.finetune_strategy in ('lora', 'qlora'):
+            task_type = "CAUSAL_LM" if task == 'clm' else "SEQ_CLS"
+            self.model = self.apply_peft(self.model, task_type)
+
         self.config = olmo_config
 
         super(Olmo, self).__init__(model=self.model,
@@ -189,14 +196,19 @@ class Olmo(HuggingFaceModel):
                                 return_tensors="pt")
 
         if self.task == 'clm':
-            inputs, labels = self.data_collator.torch_mask_tokens(
-                tokens['input_ids'])
+            input_ids = tokens["input_ids"]
+            labels = input_ids.clone()
+
+            if "attention_mask" in tokens:
+                labels[tokens["attention_mask"] == 0] = -100
+    
             inputs = {
                 'input_ids': inputs.to(self.device),
                 'labels': labels.to(self.device),
                 'attention_mask': tokens['attention_mask'].to(self.device),
             }
             return inputs, None, w
+
         elif self.task in ['regression', 'classification', 'mtr']:
             if y is not None:
                 # y is None during predict

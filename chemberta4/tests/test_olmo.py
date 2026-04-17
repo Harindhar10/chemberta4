@@ -14,7 +14,7 @@ def smiles_regression_dataset(tmpdir):
     ]
     labels = [3.112, 2.432]
     df = pd.DataFrame(list(zip(smiles, labels)), columns=["smiles", "task1"])
-    filepath = os.path.join(tmpdir, 'smiles.csv')
+    filepath = os.path.join(tmpdir, 'smiles_reg.csv')
     df.to_csv(filepath)
 
     loader = dc.data.CSVLoader(["task1"],
@@ -23,12 +23,125 @@ def smiles_regression_dataset(tmpdir):
     dataset = loader.create_dataset(filepath)
     return dataset
 
-def test_olmo_fit_and_predict():
-    """
+
+def smiles_multitask_regression_dataset(tmpdir):
     
-    """
-    from deepchem.models.torch_models.olmo import Olmo
-    import torch
+    smiles = ["CCN(CCSC)C(=O)N[C@@](C)(CC)C(F)(F)F","CC1(C)CN(C(=O)Nc2cc3ccccc3nn2)C[C@@]2(CCOC2)O1"]
+    labels1 = [3.112,2.432]
+    labels2 = [7.222,9.124]
+    df = pd.DataFrame(list(zip(smiles, labels1, labels2)), columns=["smiles", "task0", "task1"])
+    filepath = os.path.join(tmpdir, 'smiles_mtr.csv')
+    df.to_csv(filepath)
+
+    loader = dc.data.CSVLoader(["task1","task2"],
+                               feature_field="smiles",
+                               featurizer=dc.feat.DummyFeaturizer())
+    dataset = loader.create_dataset(filepath)
+    return dataset
+
+
+def test_olmo_pretraining(smiles_regression_dataset):
+    """Test causal language model pretraining completes without error."""
+    tokenizer_path = 'allenai/olmo-7b-hf'
+    model = Olmo(task='clm', tokenizer_path=tokenizer_path)
+    model.load_from_pretrained('allenai/olmo-7b-hf',from_hf_checkpoint=True)
+    
+    dataset = smiles_multitask_regression_dataset(tempfile.mkdtemp())
+    loss = model.fit(dataset, nb_epoch=1)
+    assert loss
+
+def test_olmo_regression():
+    """Test single-task regression fit, evaluate, and predict."""
+    tokenizer_path = 'allenai/olmo-7b-hf'
+    model = Olmo(task="regression", 
+                n_tasks=1,
+                tokenizer_path=tokenizer_path, 
+                config = {'torch_dtype': torch.float16},
+                batch_size=2)
+
+    dataset = smiles_regression_dataset(tempfile.mkdtemp())
+
+    loss = model.fit(dataset, nb_epoch=1)
+    eval_score = model.evaluate(dataset,
+                                metrics=dc.metrics.Metric(
+                                dc.metrics.mean_absolute_error))
+
+    assert loss, eval_score
+    prediction = model.predict(dataset)
+    assert prediction.shape == dataset.y.shape
+
+def test_olmo_classification():
+    """Test single-task classification fit, evaluate, and predict."""
+    dataset = smiles_regression_dataset(tempfile.mkdtemp())
+    y = np.random.choice([0, 1], size=smiles_regression_dataset.y.shape)
+    
+    dataset = dc.data.NumpyDataset(X=smiles_regression_dataset.X,
+                                   y=y,
+                                   w=smiles_regression_dataset.w,
+                                   ids=smiles_regression_dataset.ids)
+
+    model = Olmo(task="classification", 
+                n_tasks=1,
+                tokenizer_path= 'allenai/olmo-7b-hf', 
+                config = {'torch_dtype': torch.float16},
+                batch_size=2)
+    loss = model.fit(dataset, nb_epoch=1)
+    eval_score = model.evaluate(dataset,
+                                metrics=dc.metrics.Metric(
+                                    dc.metrics.recall_score))
+    assert eval_score, loss
+    prediction = model.predict(dataset)
+    # logit scores
+    assert prediction.shape == (dataset.y.shape[0], 2)
+
+def test_olmo_multi_task_regression():
+    """Test multi-task regression fit, evaluate, and predict."""
+    tokenizer_path = 'allenai/olmo-7b-hf'
+    model = Olmo(task="mtr", 
+                n_tasks=2,
+                tokenizer_path=tokenizer_path, 
+                config = {'torch_dtype': torch.float16},
+                batch_size=2)
+    
+    dataset = smiles_multitask_regression_dataset(tempfile.mkdtemp())
+
+    loss = model.fit(dataset, nb_epoch=1)
+    eval_score = model.evaluate(dataset,
+                                metrics=dc.metrics.Metric(
+                                dc.metrics.mean_absolute_error))
+
+    assert loss, eval_score
+    prediction = model.predict(dataset)
+    assert prediction.shape == dataset.y.shape
+
+
+def test_olmo_multitask_classification():
+    """Test multi-task classification fit, evaluate, and predict on ClinTox."""
+    loader = dc.molnet.load_clintox(featurizer=dc.feat.DummyFeaturizer())
+    tasks, dataset, transformers = loader
+    train, val, test = dataset
+
+    train_sample = train.select(range(10))
+    test_sample = test.select(range(10))
+    
+    model = Olmo(task="classification",
+            n_tasks=len(tasks),
+            tokenizer_path="allenai/Olmo-7b-hf",
+            config = {'torch_dtype': torch.float16,},
+            batch_size = 2)
+
+    loss = model.fit(train_sample, nb_epoch=1)
+    eval_score = model.evaluate(test_sample,
+                                metrics=dc.metrics.Metric(
+                                    dc.metrics.roc_auc_score))
+    assert eval_score, loss
+    prediction = model.predict(test_sample)
+    # logit scores
+    assert prediction.shape == (test_sample.y.shape[0], len(tasks))
+
+
+def test_olmo_lightning_fit_and_predict():
+    """Test QLoRA regression training and prediction via PyTorch Lightning DDP."""
     from deepchem.models.lightning import LightningTorchModel
 
     tokenizer_path = 'allenai/olmo-7b-hf'
@@ -51,7 +164,7 @@ def test_olmo_fit_and_predict():
     devices = -1,
     log_every_n_steps=1
     )
-    
+
     trainer.fit(dataset, num_workers=0)
     predictions = trainer.predict(dataset)
 
@@ -62,6 +175,7 @@ def test_olmo_fit_and_predict():
 
 
 def test_chemberta_load_weights_from_hf_hub():
+    """Test that load_from_pretrained replaces the model instance with pretrained weights."""
     pretrained_model_path = 'allenai/olmo-7b-hf'
     tokenizer_path = 'allenai/olmo-7b-hf'
     model = Olmo(task='regression', tokenizer_path=tokenizer_path, config = {'torch_dtype': torch.float16})
@@ -71,3 +185,31 @@ def test_chemberta_load_weights_from_hf_hub():
     # new model's model attribute is an entirely new model initiated by AutoModel.load_from_pretrained
     # and hence it should have a different identifier
     assert old_model_id != new_model_id
+
+def test_lora_qlora():
+    """Test that LoRA and QLoRA adapters are applied at init with correct trainable parameter structure."""
+    from peft import PeftModel
+
+    for strategy in ('lora', 'qlora'):
+        model = Olmo(task='regression',
+                     finetune_strategy=strategy,
+                     tokenizer_path='allenai/olmo-7b-hf',
+                     config={'torch_dtype': torch.float16})
+
+        assert isinstance(model.model, PeftModel)
+
+        model.model.print_trainable_parameters()
+
+        trainable = [n for n, p in model.model.named_parameters() if p.requires_grad]
+        assert len(trainable) > 0
+
+        # All trainable params must be either LoRA adapter weights or the task head
+        assert all('lora_' in n or 'score' in n for n in trainable)
+
+        # At least some LoRA adapter params must be trainable
+        assert any('lora_' in n for n in trainable)
+
+        # Base transformer backbone weights must be frozen
+        frozen = [n for n, p in model.model.named_parameters() if not p.requires_grad]
+        assert len(frozen) > 0
+
