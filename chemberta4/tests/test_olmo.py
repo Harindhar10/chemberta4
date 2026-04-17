@@ -94,6 +94,32 @@ def test_olmo_classification():
     # logit scores
     assert prediction.shape == (dataset.y.shape[0], 2)
 
+
+def test_chemberta_save_reload(tmpdir):
+    """Test that a saved checkpoint is restored with identical model weights."""
+    tokenizer_path = 'allenai/olmo-7b-hf'
+    model = Olmo(task='regression',
+                      tokenizer_path=tokenizer_path,
+                      model_dir=tmpdir)
+    model._ensure_built()
+    model.save_checkpoint()
+
+    model_new = Olmo(task='regression',
+                          tokenizer_path=tokenizer_path,
+                          model_dir=tmpdir)
+    model_new.restore()
+
+    old_state = model.model.state_dict()
+    new_state = model_new.model.state_dict()
+    matches = [
+        torch.allclose(old_state[key], new_state[key])
+        for key in old_state.keys()
+    ]
+
+    # all keys values should match
+    assert all(matches)
+
+
 def test_olmo_multi_task_regression():
     """Test multi-task regression fit, evaluate, and predict."""
     tokenizer_path = 'allenai/olmo-7b-hf'
