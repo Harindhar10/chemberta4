@@ -173,18 +173,36 @@ def test_olmo_lightning_fit_and_predict():
     # The final prediction shape should be (n_samples, n_tasks)
     assert predictions.shape == (2, 1)
 
-
-def test_chemberta_load_weights_from_hf_hub():
-    """Test that load_from_pretrained replaces the model instance with pretrained weights."""
-    pretrained_model_path = 'allenai/olmo-7b-hf'
+def test_olmo_load_from_pretrained(tmpdir):
+    """Test that base model weights are correctly transferred from a pretrained CLM checkpoint 
+    to a regression model."""
+    pretrain_model_dir = os.path.join(tmpdir, 'pretrain')
+    finetune_model_dir = os.path.join(tmpdir, 'finetune')
     tokenizer_path = 'allenai/olmo-7b-hf'
-    model = Olmo(task='regression', tokenizer_path=tokenizer_path, config = {'torch_dtype': torch.float16})
-    old_model_id = id(model.model)
-    model.load_from_pretrained(pretrained_model_path, from_hf_checkpoint=True)
-    new_model_id = id(model.model)
-    # new model's model attribute is an entirely new model initiated by AutoModel.load_from_pretrained
-    # and hence it should have a different identifier
-    assert old_model_id != new_model_id
+    pretrain_model = Olmo(task='clm',
+                               tokenizer_path=tokenizer_path,
+                               model_dir=pretrain_model_dir)
+    pretrain_model.save_checkpoint()
+
+    finetune_model = Olmo(task='regression',
+                               tokenizer_path=tokenizer_path,
+                               model_dir=finetune_model_dir)
+    finetune_model.load_from_pretrained(pretrain_model_dir)
+
+    # check weights match
+    pretrain_model_state_dict = pretrain_model.model.state_dict()
+    finetune_model_state_dict = finetune_model.model.state_dict()
+
+    pretrain_base_model_keys = [
+        key for key in pretrain_model_state_dict.keys() if 'olmo' in key
+    ]
+    matches = [
+        torch.allclose(pretrain_model_state_dict[key],
+                       finetune_model_state_dict[key])
+        for key in pretrain_base_model_keys
+    ]
+
+    assert all(matches)
 
 def test_lora_qlora():
     """Test that LoRA and QLoRA adapters are applied at init with correct trainable parameter structure."""
