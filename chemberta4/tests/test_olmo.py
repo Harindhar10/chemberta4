@@ -8,6 +8,7 @@ import torch
 
 
 def smiles_regression_dataset(tmpdir):
+    """Creates a single-task regression dataset with two SMILES molecules and continuous labels."""
     smiles = [
         "CCN(CCSC)C(=O)N[C@@](C)(CC)C(F)(F)F",
         "CC1(C)CN(C(=O)Nc2cc3ccccc3nn2)C[C@@]2(CCOC2)O1"
@@ -25,7 +26,7 @@ def smiles_regression_dataset(tmpdir):
 
 
 def smiles_multitask_regression_dataset(tmpdir):
-    
+    """Creates a two-task regression dataset with two SMILES molecules and two sets of continuous labels."""
     smiles = ["CCN(CCSC)C(=O)N[C@@](C)(CC)C(F)(F)F","CC1(C)CN(C(=O)Nc2cc3ccccc3nn2)C[C@@]2(CCOC2)O1"]
     labels1 = [3.112,2.432]
     labels2 = [7.222,9.124]
@@ -241,8 +242,6 @@ def test_lora_qlora():
                      config={'torch_dtype': torch.float16})
 
         assert isinstance(model.model, PeftModel)
-
-        model.model.print_trainable_parameters()
 
         trainable = [n for n, p in model.model.named_parameters() if p.requires_grad]
         assert len(trainable) > 0
