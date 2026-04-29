@@ -31,6 +31,7 @@ pytestmark = [
                        reason="PyTorch Lightning is not installed")
 ]
 
+
 @pytest.fixture(scope="function")
 def smiles_regression_dataset(tmpdir):
     """Creates a single-task regression dataset with two SMILES molecules and continuous labels."""
@@ -59,7 +60,7 @@ def smiles_multitask_regression_dataset(tmpdir):
     filepath = os.path.join(tmpdir, 'smiles_mtr.csv')
     df.to_csv(filepath)
 
-    loader = dc.data.CSVLoader(["task1","task2"],
+    loader = dc.data.CSVLoader(["task0","task1"],
                                feature_field="smiles",
                                featurizer=dc.feat.DummyFeaturizer())
     dataset = loader.create_dataset(filepath)
@@ -72,23 +73,23 @@ def test_olmo_pretraining(smiles_regression_dataset):
     tokenizer_path = 'allenai/olmo-7b-hf'
     model = Olmo(task='clm', tokenizer_path=tokenizer_path)
     model.load_from_pretrained('allenai/olmo-7b-hf',from_hf_checkpoint=True)
-    
-    dataset = smiles_multitask_regression_dataset(tempfile.mkdtemp())
+
+    dataset = smiles_regression_dataset
     loss = model.fit(dataset, nb_epoch=1)
     assert loss
 
 @pytest.mark.torch
-
-def test_olmo_regression():
+def test_olmo_regression(smiles_regression_dataset):
     """Test single-task regression fit, evaluate, and predict."""
     tokenizer_path = 'allenai/olmo-7b-hf'
-    model = Olmo(task="regression", 
+    model = Olmo(task="regression",
                 n_tasks=1,
-                tokenizer_path=tokenizer_path, 
+                tokenizer_path=tokenizer_path,
                 config = {'torch_dtype': torch.float16},
                 batch_size=2)
 
-    dataset = smiles_regression_dataset(tempfile.mkdtemp())
+    model.load_from_pretrained(model_dir='allenai/olmo-7b-hf',from_hf_checkpoint=True)
+    dataset = smiles_regression_dataset
 
     loss = model.fit(dataset, nb_epoch=1)
     eval_score = model.evaluate(dataset,
@@ -100,21 +101,23 @@ def test_olmo_regression():
     assert prediction.shape == dataset.y.shape
 
 @pytest.mark.torch
-def test_olmo_classification():
+def test_olmo_classification(smiles_regression_dataset):
     """Test single-task classification fit, evaluate, and predict."""
-    dataset = smiles_regression_dataset(tempfile.mkdtemp())
-    y = np.random.choice([0, 1], size=smiles_regression_dataset.y.shape)
+    dataset = smiles_regression_dataset
+    y = np.random.choice([0, 1], size=dataset.y.shape)
 
-    dataset = dc.data.NumpyDataset(X=smiles_regression_dataset.X,
+    dataset = dc.data.NumpyDataset(X=dataset.X,
                                    y=y,
-                                   w=smiles_regression_dataset.w,
-                                   ids=smiles_regression_dataset.ids)
+                                   w=dataset.w,
+                                   ids=dataset.ids)
 
     model = Olmo(task="classification", 
                 n_tasks=1,
                 tokenizer_path= 'allenai/olmo-7b-hf', 
                 config = {'torch_dtype': torch.float16},
                 batch_size=2)
+    model.load_from_pretrained(model_dir='allenai/olmo-7b-hf',from_hf_checkpoint=True)
+
     loss = model.fit(dataset, nb_epoch=1)
     eval_score = model.evaluate(dataset,
                                 metrics=dc.metrics.Metric(
@@ -132,6 +135,7 @@ def test_chemberta_save_reload(tmpdir):
     model = Olmo(task='regression',
                       tokenizer_path=tokenizer_path,
                       model_dir=tmpdir)
+
     model._ensure_built()
     model.save_checkpoint()
 
@@ -152,16 +156,18 @@ def test_chemberta_save_reload(tmpdir):
 
 
 @pytest.mark.torch
-def test_olmo_multi_task_regression():
+def test_olmo_multi_task_regression(smiles_multitask_regression_dataset):
     """Test multi-task regression fit, evaluate, and predict."""
     tokenizer_path = 'allenai/olmo-7b-hf'
-    model = Olmo(task="mtr", 
+    model = Olmo(task="mtr",
                 n_tasks=2,
-                tokenizer_path=tokenizer_path, 
+                tokenizer_path=tokenizer_path,
                 config = {'torch_dtype': torch.float16},
                 batch_size=2)
-    
-    dataset = smiles_multitask_regression_dataset(tempfile.mkdtemp())
+
+    model.load_from_pretrained(from_hf_checkpoint=True)
+
+    dataset = smiles_multitask_regression_dataset
 
     loss = model.fit(dataset, nb_epoch=1)
     eval_score = model.evaluate(dataset,
@@ -189,6 +195,9 @@ def test_olmo_multitask_classification():
             config = {'torch_dtype': torch.float16,},
             batch_size = 2)
 
+    model.load_from_pretrained(model_dir='allenai/olmo-7b-hf',from_hf_checkpoint=True)
+
+
     loss = model.fit(train_sample, nb_epoch=1)
     eval_score = model.evaluate(test_sample,
                                 metrics=dc.metrics.Metric(
@@ -200,7 +209,7 @@ def test_olmo_multitask_classification():
 
 
 @pytest.mark.torch
-def test_olmo_lightning_fit_and_predict():
+def test_olmo_lightning_fit_and_predict(smiles_regression_dataset):
     """Test QLoRA regression training and prediction via PyTorch Lightning DDP."""
     from deepchem.models.lightning import LightningTorchModel
 
@@ -212,7 +221,9 @@ def test_olmo_lightning_fit_and_predict():
                 config = {'torch_dtype': torch.float16},
                 batch_size = 2)
 
-    dataset = smiles_regression_dataset(tempfile.mkdtemp())
+    model.load_from_pretrained(model_dir='allenai/olmo-7b-hf',from_hf_checkpoint=True)
+
+    dataset = smiles_regression_dataset
     
     trainer = LightningTorchModel(
     model=model,
@@ -275,6 +286,8 @@ def test_lora_qlora():
                      finetune_strategy=strategy,
                      tokenizer_path='allenai/olmo-7b-hf',
                      config={'torch_dtype': torch.float16})
+
+        model.load_from_pretrained(model_dir='allenai/olmo-7b-hf',from_hf_checkpoint=True)
 
         assert isinstance(model.model, PeftModel)
 
