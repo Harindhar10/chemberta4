@@ -1,0 +1,107 @@
+name: Python Code Linting
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'chemberta4/**/*.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'chemberta4/**/*.py'
+  workflow_dispatch:
+
+jobs:
+
+  run-yapf-formatting-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set commit range (push to the main branch, e.g. merge)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          echo "COMMIT_RANGE=${{ github.event.before }}.." >> $GITHUB_ENV
+          echo $GITHUB_ENV
+
+      - name: Set commit range (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          echo "COMMIT_RANGE=origin/main..." >> $GITHUB_ENV
+          echo $GITHUB_ENV
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: chemberta4-env
+          python-version: 3.12
+          auto-activate: true
+
+      - name: Install dev requirements
+        shell: bash -el {0}
+        run: |
+          pip install -r requirements/requirements-dev.txt
+
+      - name: Check yapf formatting
+        continue-on-error: false
+        shell: bash -el {0}
+        run: |
+          yapf --version
+          CHANGED_FILES=`git diff --name-only $COMMIT_RANGE | grep .py$ || true`
+          if [ -n "$CHANGED_FILES" ]; then
+            yapf -d $CHANGED_FILES
+          fi
+
+  run-flake8-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: chemberta4-env
+          python-version: 3.12
+          auto-activate: true
+
+      - name: Install dev requirements
+        shell: bash -el {0}
+        run: |
+          pip install -r requirements/requirements-dev.txt
+
+      - name: Check flake8
+        continue-on-error: false
+        shell: bash -el {0}
+        run: flake8 --count chemberta4
+
+  run-mypy-type-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: chemberta4-env
+          python-version: 3.12
+          auto-activate: true
+
+      - name: Install dev requirements
+        shell: bash -el {0}
+        run: |
+          pip install -r requirements/requirements-dev.txt
+
+      - name: mypy - Check type hints in chemberta4
+        continue-on-error: false
+        shell: bash -el {0}
+        run: mypy --ignore-missing-imports -p chemberta4

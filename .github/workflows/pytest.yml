@@ -1,0 +1,49 @@
+name: Run pytest (non-torch)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "chemberta4/**"
+  workflow_dispatch:
+
+jobs:
+  run-pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: chemberta4-env
+          python-version: 3.12
+          auto-activate: true
+
+      - name: Install CPU-only torch
+        shell: bash -el {0}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dev requirements
+        shell: bash -el {0}
+        run: |
+          pip install -r requirements/requirements-dev.txt
+
+      - name: Install chemberta4 package
+        shell: bash -el {0}
+        run: |
+          pip install -e .
+
+      - name: Run pytest
+        # Exit code 5 means "no tests collected" — treat as success until lightweight tests are added.
+        # To run torch (GPU) tests locally: pytest -v -m torch chemberta4/tests/
+        shell: bash -el {0}
+        run: |
+          pytest -v -m "not torch" chemberta4/tests/ || test $? -eq 5
