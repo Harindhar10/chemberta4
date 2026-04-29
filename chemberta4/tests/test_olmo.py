@@ -5,8 +5,33 @@ import os
 import tempfile
 from chemberta4.olmo import Olmo
 import torch
+import pytest
+
+try:
+    import torch
+    gpu_available = torch.cuda.is_available() and torch.cuda.device_count() > 1
+except ImportError:
+    gpu_available = False
+
+try:
+    import lightning as L
+    from deepchem.models.lightning.trainer import LightningTorchModel
+    PYTORCH_LIGHTNING_IMPORT_FAILED = False
+except ImportError:
+    PYTORCH_LIGHTNING_IMPORT_FAILED = True
 
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # to avoid deadlocks in tokenization due to parallel processing already done by dataloader.
+
+
+pytestmark = [
+    pytest.mark.skipif(not gpu_available,
+                       reason="No GPU available for testing"),
+    pytest.mark.skipif(PYTORCH_LIGHTNING_IMPORT_FAILED,
+                       reason="PyTorch Lightning is not installed")
+]
+
+@pytest.fixture(scope="function")
 def smiles_regression_dataset(tmpdir):
     """Creates a single-task regression dataset with two SMILES molecules and continuous labels."""
     smiles = [
@@ -24,7 +49,7 @@ def smiles_regression_dataset(tmpdir):
     dataset = loader.create_dataset(filepath)
     return dataset
 
-
+@pytest.fixture(scope="function")
 def smiles_multitask_regression_dataset(tmpdir):
     """Creates a two-task regression dataset with two SMILES molecules and two sets of continuous labels."""
     smiles = ["CCN(CCSC)C(=O)N[C@@](C)(CC)C(F)(F)F","CC1(C)CN(C(=O)Nc2cc3ccccc3nn2)C[C@@]2(CCOC2)O1"]
@@ -41,6 +66,7 @@ def smiles_multitask_regression_dataset(tmpdir):
     return dataset
 
 
+@pytest.mark.torch
 def test_olmo_pretraining(smiles_regression_dataset):
     """Test causal language model pretraining completes without error."""
     tokenizer_path = 'allenai/olmo-7b-hf'
@@ -50,6 +76,8 @@ def test_olmo_pretraining(smiles_regression_dataset):
     dataset = smiles_multitask_regression_dataset(tempfile.mkdtemp())
     loss = model.fit(dataset, nb_epoch=1)
     assert loss
+
+@pytest.mark.torch
 
 def test_olmo_regression():
     """Test single-task regression fit, evaluate, and predict."""
@@ -71,11 +99,12 @@ def test_olmo_regression():
     prediction = model.predict(dataset)
     assert prediction.shape == dataset.y.shape
 
+@pytest.mark.torch
 def test_olmo_classification():
     """Test single-task classification fit, evaluate, and predict."""
     dataset = smiles_regression_dataset(tempfile.mkdtemp())
     y = np.random.choice([0, 1], size=smiles_regression_dataset.y.shape)
-    
+
     dataset = dc.data.NumpyDataset(X=smiles_regression_dataset.X,
                                    y=y,
                                    w=smiles_regression_dataset.w,
@@ -96,6 +125,7 @@ def test_olmo_classification():
     assert prediction.shape == (dataset.y.shape[0], 2)
 
 
+@pytest.mark.torch
 def test_chemberta_save_reload(tmpdir):
     """Test that a saved checkpoint is restored with identical model weights."""
     tokenizer_path = 'allenai/olmo-7b-hf'
@@ -121,6 +151,7 @@ def test_chemberta_save_reload(tmpdir):
     assert all(matches)
 
 
+@pytest.mark.torch
 def test_olmo_multi_task_regression():
     """Test multi-task regression fit, evaluate, and predict."""
     tokenizer_path = 'allenai/olmo-7b-hf'
@@ -142,6 +173,7 @@ def test_olmo_multi_task_regression():
     assert prediction.shape == dataset.y.shape
 
 
+@pytest.mark.torch
 def test_olmo_multitask_classification():
     """Test multi-task classification fit, evaluate, and predict on ClinTox."""
     loader = dc.molnet.load_clintox(featurizer=dc.feat.DummyFeaturizer())
@@ -167,6 +199,7 @@ def test_olmo_multitask_classification():
     assert prediction.shape == (test_sample.y.shape[0], len(tasks))
 
 
+@pytest.mark.torch
 def test_olmo_lightning_fit_and_predict():
     """Test QLoRA regression training and prediction via PyTorch Lightning DDP."""
     from deepchem.models.lightning import LightningTorchModel
@@ -200,6 +233,7 @@ def test_olmo_lightning_fit_and_predict():
     # The final prediction shape should be (n_samples, n_tasks)
     assert predictions.shape == (2, 1)
 
+@pytest.mark.torch
 def test_olmo_load_from_pretrained(tmpdir):
     """Test that base model weights are correctly transferred from a pretrained CLM checkpoint 
     to a regression model."""
@@ -231,6 +265,7 @@ def test_olmo_load_from_pretrained(tmpdir):
 
     assert all(matches)
 
+@pytest.mark.torch
 def test_lora_qlora():
     """Test that LoRA and QLoRA adapters are applied at init with correct trainable parameter structure."""
     from peft import PeftModel
